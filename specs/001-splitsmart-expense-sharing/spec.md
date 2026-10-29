@@ -23,6 +23,17 @@ defined in the constitution (`.specify/memory/constitution.md`). Where this spec
 - Q: Who may approve an expense? → A: Any one participant other than the creator (FR-021).
 - Q: Must the recipient confirm a payment before balances change? → A: No; a payment applies
   as soon as it is recorded (FR-031).
+- Q: Are balances and payments tracked per group or as one combined amount across groups? → A:
+  Per group; every payment names a group, and the overall balance between two people is the sum
+  of their group balances (FR-027, FR-030).
+- Q: Who can be the payer, and must the payer share the cost? → A: Exactly one payer, any group
+  member, defaulting to the creator; the payer need not be a participant (FR-010).
+- Q: Who gets leftover cents when a split is not exact? → A: Round every share down, then give
+  one leftover cent each to participants in the order they were listed (FR-011–FR-013).
+- Q: Who is notified when a member creates an expense? → A: Every other current group member;
+  participants other than the creator see it flagged "needs your approval" (FR-017).
+- Q: What password and login-protection rules apply in the MVP? → A: Passwords of at least 8
+  characters; 5 consecutive failed logins lock the account for 5 minutes (FR-001, NFR-002).
 
 ## Requirements Inventory
 
@@ -83,6 +94,11 @@ balances, and notifications.
    refused with a message that does not reveal whether the username or password was wrong.
 4. **Given** alex is logged in, **When** alex logs out, **Then** no alex data is visible until
    someone logs in again.
+5. **Given** a password of 7 characters, **When** a visitor registers, **Then** registration is
+   refused with a message stating the 8-character minimum.
+6. **Given** 5 consecutive failed logins for "alex", **When** anyone tries to log in as alex within
+   the next 5 minutes, even with the correct password, **Then** login is refused with a message
+   that the account is temporarily locked; after 5 minutes, the correct password works.
 
 ---
 
@@ -195,12 +211,17 @@ confirm the balance becomes $0.00.
 
 **Acceptance Scenarios**:
 
-1. **Given** sam owes alex $30.00, **When** sam records a $30.00 payment to alex, **Then** the
-   balance between them becomes $0.00 and the payment appears in both users' payment history.
-2. **Given** sam owes alex $30.00, **When** sam records a $40.00 payment, **Then** the system warns
-   that this exceeds the amount owed and, if sam confirms, alex then owes sam $10.00.
-3. **Given** any user, **When** they record a payment of $0.00 or a negative amount, **Then** it is
-   refused.
+1. **Given** sam owes alex $30.00 in "Apartment 4B", **When** sam records a $30.00 payment to alex
+   in that group, **Then** their balance in that group becomes $0.00 and the payment appears in
+   both users' payment history.
+2. **Given** sam owes alex $30.00 in "Apartment 4B", **When** sam records a $40.00 payment in that
+   group, **Then** the system warns that this exceeds the amount owed and, if sam confirms, alex
+   then owes sam $10.00 in that group.
+3. **Given** sam owes alex $30.00 in "Apartment 4B" and $0.00 in "Ski Trip", **When** sam records
+   a $30.00 payment in "Ski Trip", **Then** the system warns of overpayment for that group, and
+   the "Apartment 4B" balance is unchanged.
+4. **Given** any user, **When** they record a payment of $0.00 or a negative amount, or without a
+   group, **Then** it is refused.
 
 ---
 
@@ -219,9 +240,11 @@ unread notification; confirm alex has none for their own expense.
 1. **Given** alex, sam, and jo are members, **When** alex creates an expense, **Then** sam and jo
    each receive a notification naming alex, the group, the description, and the amount, and alex
    does not.
-2. **Given** sam has unread notifications, **When** sam logs in, **Then** the unread count is
+2. **Given** alex, sam, and jo are members, **When** alex creates an expense with participants
+   alex and sam only, **Then** sam's notification is marked "needs your approval" and jo's is not.
+3. **Given** sam has unread notifications, **When** sam logs in, **Then** the unread count is
    shown and sam can open the list and mark items read.
-3. **Given** sam was removed from a group, **When** a new expense is created in that group,
+4. **Given** sam was removed from a group, **When** a new expense is created in that group,
    **Then** sam is not notified.
 
 ---
@@ -306,13 +329,15 @@ current member unless stated otherwise.
 
 - **FR-010** [MVP]: A group member MUST be able to create an expense in that group with: amount
   (greater than 0, at most 1,000,000.00, at most two decimal places), date (not later than
-  today), description (1–200 characters), payer (a group member, defaulting to the creator),
-  one or more participants (group members), and split method (equal or percentage).
+  today), description (1–200 characters), exactly one payer (any group member, defaulting to
+  the creator), one or more participants (group members; the payer MAY or MAY NOT be among
+  them), and split method (equal or percentage). Multiple payers per expense are not supported.
 - **FR-011** [MVP]: For an equal split, each participant's share MUST be the amount divided by
   the number of participants, rounded down to the cent.
 - **FR-012** [MVP]: Leftover cents from any split MUST be assigned one cent at a time to
-  participants in the order they appear in the expense's participant list, so the shares always
-  total exactly the expense amount.
+  participants in the order the creator listed them, starting with the first, so the shares
+  always total exactly the expense amount. The participant order MUST be saved with the expense
+  so shares are reproducible.
 - **FR-013** [MVP]: For a percentage split, each participant MUST have a percentage between 0 and
   100 with at most two decimal places, the percentages MUST total exactly 100.00, and each share
   MUST be the amount times the percentage, rounded down to the cent, with leftovers handled by
@@ -327,7 +352,9 @@ current member unless stated otherwise.
 **Notifications (CR-05)**
 
 - **FR-017** [MVP]: When an expense is created, every other current group member MUST receive an
-  in-app notification stating the creator, group, description, amount, and date.
+  in-app notification stating the creator, group, description, amount, and date. For each
+  participant other than the creator, the notification MUST also be marked "needs your
+  approval" while the expense is Pending.
 - **FR-018** [Post-MVP]: Users MUST be able to choose to receive notifications outside the
   application (for example, by email).
 - **FR-019** [MVP]: Users MUST see an unread-notification count when logged in, open the list of
@@ -354,8 +381,9 @@ current member unless stated otherwise.
 
 - **FR-026** [MVP]: For each Approved expense, each participant other than the payer MUST owe the
   payer their share. The payer's own share MUST NOT create a debt.
-- **FR-027** [MVP]: The system MUST maintain the net balance between every pair of users across
-  all groups, combining all Approved expenses and all recorded payments.
+- **FR-027** [MVP]: The system MUST maintain, for each group, the net balance between every pair
+  of users in that group, combining the group's Approved expenses and recorded payments. The
+  overall balance between two users MUST equal the sum of their per-group balances.
 - **FR-028** [MVP]: A user MUST be able to view, for every other user they share a balance with,
   the net amount and direction (owes me / I owe), with a per-group breakdown that adds up to the
   net amount.
@@ -365,12 +393,13 @@ current member unless stated otherwise.
 **Payment tracking (CR-08)**
 
 - **FR-030** [MVP]: A user MUST be able to record a payment they made to another user with
-  amount (greater than 0, at most two decimals), date (not later than today), optional group, and
-  optional note (up to 200 characters).
-- **FR-031** [MVP]: A recorded payment MUST reduce what the payer owes the recipient by the
-  payment amount as soon as it is recorded; the recipient does not need to confirm it.
-- **FR-032** [MVP]: When a payment exceeds the amount currently owed, the system MUST warn the
-  payer and require confirmation before recording it.
+  amount (greater than 0, at most two decimals), date (not later than today), group (required;
+  a group both users belong to), and optional note (up to 200 characters).
+- **FR-031** [MVP]: A recorded payment MUST reduce what the payer owes the recipient in the
+  payment's group by the payment amount as soon as it is recorded; the recipient does not need to
+  confirm it.
+- **FR-032** [MVP]: When a payment exceeds the amount the payer currently owes the recipient in
+  that group, the system MUST warn the payer and require confirmation before recording it.
 - **FR-033** [MVP]: Both payer and recipient MUST be able to view the payment in their payment
   history.
 
@@ -405,7 +434,8 @@ current member unless stated otherwise.
 - **NFR-001 Accuracy**: All money calculations MUST be exact to the cent, with no accumulated
   rounding difference after any number of expenses and payments.
 - **NFR-002 Security**: Stored passwords MUST be in a non-reversible form. Five consecutive failed
-  logins for an account MUST block further attempts on that account for 5 minutes.
+  logins for an account MUST block further attempts on that account for 5 minutes; a successful
+  login resets the failure count.
 - **NFR-003 Privacy**: No screen or report MAY show data from a group the user does not belong to.
 - **NFR-004 Performance**: With up to 50 users, 50 groups, and 10,000 expenses, any screen or
   report MUST appear within 2 seconds on a typical student laptop.
@@ -430,8 +460,8 @@ current member unless stated otherwise.
 - **Share**: One participant's portion of an expense. Participant, percentage (if a percentage
   split), amount.
 - **Approval Decision**: Approver, expense, decision (approve / reject), reason, date and time.
-- **Payment**: Money paid from one user to another. Payer, recipient, amount, date, optional
-  group, optional note.
+- **Payment**: Money paid from one user to another within a group. Payer, recipient, group,
+  amount, date, optional note.
 - **Notification**: Recipient, related expense or decision, message, created time, read flag.
 - **Balance**: Derived, not entered. Net amount between two users, overall and per group.
 - **Report**: Derived, not stored in the MVP. Filter settings plus the matching items and totals.
@@ -461,12 +491,12 @@ current member unless stated otherwise.
 
 - **Single currency**: All amounts use one currency (US dollars); currency conversion is out of
   scope.
-- **Payer**: The customer request does not name a payer; the spec assumes every expense has
-  exactly one payer, defaulting to the creator.
-- **Balance scope**: "Balance owed by each user to every other user" is read as a net balance per
-  pair of users across all groups, with a per-group breakdown.
-- **Notification audience**: "Other group members" means all current members of the expense's
-  group except its creator, not only the participants.
+- **Payer** (confirmed 2026-10-29): The customer request does not name a payer; every expense
+  has exactly one payer, any group member, defaulting to the creator, who need not share the cost.
+- **Balance scope** (confirmed 2026-10-29): "Balance owed by each user to every other user" is
+  tracked per group; the overall balance per pair is the sum across their shared groups.
+- **Notification audience** (confirmed 2026-10-29): all current members of the expense's group
+  except its creator; non-creator participants see an approval flag.
 - **Single-level approval in MVP**: The customer allows "multiple levels of approval or a single
   review process"; MVP implements single-level approval, and multi-level is Post-MVP (FR-025).
 - **Debt simplification**: Balances are not simplified across users (e.g., A owes B, B owes C is
