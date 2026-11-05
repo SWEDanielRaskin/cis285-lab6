@@ -1,10 +1,10 @@
 # SplitSmart Architecture & Design — Independent AI Prompt Pack
 
 **Project:** CIS 285 Lab 6 — SplitSmart Expense Sharing  
-**Repository:** \`SWEDanielRaskin/cis285-lab6\`  
-**Feature:** \`001-splitsmart-expense-sharing\`
+**Repository:** `SWEDanielRaskin/cis285-lab6`  
+**Feature:** `001-splitsmart-expense-sharing`
 
-> **Draft branch:** This prompt pack belongs on \`draft/architecture-design-comparison-prompts\`, not \`main\`. GitHub's file API creates a commit on that branch; it cannot create an uncommitted working-tree file. Review/edit this branch before merging anything into \`main\`.
+> **Draft branch:** This prompt pack belongs on `draft/architecture-design-comparison-prompts`, not `main`. GitHub's file API creates a commit on that branch; it cannot create an uncommitted working-tree file. Review/edit this branch before merging anything into `main`.
 
 ## Experiment protocol
 
@@ -16,9 +16,9 @@
 
 ### Source-of-truth order
 
-1. \`UserRequirement.md\`: original customer request, read-only and authoritative for customer intent.
-2. \`.specify/memory/constitution.md\`: binding engineering principles and current implementation decisions, subject to its customer-requirement precedence rule.
-3. \`specs/001-splitsmart-expense-sharing/spec.md\`: clarified, testable feature requirements.
+1. `UserRequirement.md`: original customer request, read-only and authoritative for customer intent.
+2. `.specify/memory/constitution.md`: binding engineering principles and current implementation decisions, subject to its customer-requirement precedence rule.
+3. `specs/001-splitsmart-expense-sharing/spec.md`: clarified, testable feature requirements.
 4. Existing repository files/templates: evidence of current project setup, not authorization to invent requirements.
 
 **Known critical conflict:** OC-1 — CR-10 asks for a primarily web-based application, while constitution ID-03 selects a Java Swing desktop MVP. This remains unresolved pending written customer/instructor acceptance. Neither tool may silently resolve it or claim Swing satisfies the web requirement.
@@ -29,7 +29,7 @@
 
 # Prompt 1 — GitHub Spec Kit
 
-**Run in the Spec Kit-enabled repository environment.** Use the installed \`/speckit-plan\` workflow (or exact configured equivalent). This prompt is for the planning/design workflow through Phase 1, not task generation or implementation.
+**Run in the Spec Kit-enabled repository environment.** Use the installed `/speckit-plan` workflow (or exact configured equivalent). This prompt is for the planning/design workflow through Phase 1, not task generation or implementation.
 
 Copy everything below:
 
@@ -40,14 +40,14 @@ You are executing the architecture and design planning stage for CIS 285 Lab 6, 
 ## Mandatory source review
 
 Read the complete contents of:
-- \`UserRequirement.md\`
-- \`.specify/memory/constitution.md\`
-- \`specs/001-splitsmart-expense-sharing/spec.md\`
-- \`.specify/templates/plan-template.md\`
+- `UserRequirement.md`
+- `.specify/memory/constitution.md`
+- `specs/001-splitsmart-expense-sharing/spec.md`
+- `.specify/templates/plan-template.md`
 - Relevant Spec Kit workflow/skill instructions and repository configuration
 - Existing project structure and relevant files, if any
 
-Do not assume a file exists because a template mentions it. Treat \`UserRequirement.md\` as read-only. The feature spec contains Clarifications dated 2026-10-29; honor those recorded answers and do not ask the user to answer them again unless you find a material contradiction.
+Do not assume a file exists because a template mentions it. Treat `UserRequirement.md` as read-only. The feature spec contains Clarifications dated 2026-10-29; honor those recorded answers and do not ask the user to answer them again unless you find a material contradiction.
 
 ## Non-negotiable constraints
 
@@ -59,7 +59,7 @@ Do not assume a file exists because a template mentions it. Treat \`UserRequirem
 6. Domain, service, and repository layers must not depend on Swing/AWT. UI classes must not contain business rules.
 7. Use BigDecimal, scale 2, and the constitution's centralized rounding policy. Implement the exact clarified split algorithm in FR-011–FR-013 (round shares down, then distribute leftover cents in participant-list order). Explain how the general money policy and this specific allocation rule coexist; do not silently rewrite either.
 8. Every FR must cite source CR ID(s) and trace to design elements. Do not invent requirements or unsupported technical choices.
-9. Mark unknowns as \`NEEDS CLARIFICATION\`; distinguish facts, assumptions, recommendations, and decisions.
+9. Mark unknowns as `NEEDS CLARIFICATION`; distinguish facts, assumptions, recommendations, and decisions.
 10. AI artifacts are drafts; do not mark them approved or claim human review.
 
 ## Execute
@@ -72,7 +72,7 @@ Do not assume a file exists because a template mentions it. Treat \`UserRequirem
 
 ## Required artifacts
 
-Generate in the established feature directory, normally \`specs/001-splitsmart-expense-sharing/\`:
+Generate in the established feature directory, normally `specs/001-splitsmart-expense-sharing/`:
 
 ### 1. plan.md
 Include summary, technical context, architecture style and rationale, runtime/build context, layer/package responsibilities, dependency direction, persistence approach (flag unknowns), security/privacy/audit/error/performance considerations, Constitution Check before and after design, actual project structure, Complexity Tracking for justified deviations, and explicit OC-1 impact.
@@ -90,7 +90,7 @@ Define appropriate internal service/use-case, repository, and UI interaction con
 Use only verified prerequisites and commands supported by repository files. Document build/test/run and design-validation scenarios, expected results, and FR IDs. Do not invent unverified commands.
 
 ### 6. PlantUML diagrams
-Store under \`docs/uml/\` or the feature directory, consistently with the constitution:
+Store under `docs/uml/` or the feature directory, consistently with the constitution:
 - Domain class diagram for domain/service design
 - Layer/component diagram
 - Expense creation/approval sequence or activity diagram
@@ -146,37 +146,37 @@ Act as the solution architect and senior Java designer for CIS 285 Lab 6, SplitS
 ## Inspect first
 
 Read the complete:
-- \`UserRequirement.md\`
-- \`.specify/memory/constitution.md\`
-- \`specs/001-splitsmart-expense-sharing/spec.md\`
-- \`.specify/templates/plan-template.md\`
+- `UserRequirement.md`
+- `.specify/memory/constitution.md`
+- `specs/001-splitsmart-expense-sharing/spec.md`
+- `.specify/templates/plan-template.md`
 - Relevant Maven/build configuration and source files, if present
 - Existing UML, documentation, and project structure, if present
-- Relevant repository instructions such as \`CLAUDE.md\`
+- Relevant repository instructions such as `CLAUDE.md`
 
 Report missing files; do not assume they exist. Honor the 2026-10-29 clarified decisions.
 
 ## Independence and scope
 
 - Do not inspect/copy/use the Spec Kit output from the other experiment.
-- Do not run \`/speckit-plan\`, \`/speckit-tasks\`, \`/speckit-implement\`, or competing generation commands.
+- Do not run `/speckit-plan`, `/speckit-tasks`, `/speckit-implement`, or competing generation commands.
 - Do not edit source requirements, constitution, spec, source code, tests, migrations, or build files.
 - Do not generate implementation tasks or application code.
 - Do not commit, push, merge, or change branches.
 - Generate design documentation only.
-- Label unknowns \`NEEDS CLARIFICATION\`; never invent customer answers.
+- Label unknowns `NEEDS CLARIFICATION`; never invent customer answers.
 - Do not claim approval or human review.
 
 ## Authority and conflict
 
-\`UserRequirement.md\` governs customer intent. The constitution governs engineering principles/implementation decisions but gives customer requirements precedence on what the customer wants. The clarified spec provides testable behavior; flag conflicts with either higher source.
+`UserRequirement.md` governs customer intent. The constitution governs engineering principles/implementation decisions but gives customer requirements precedence on what the customer wants. The clarified spec provides testable behavior; flag conflicts with either higher source.
 
 Explicitly preserve OC-1: CR-10 requests a primarily web-based product, while ID-03 selects a Java Swing desktop MVP. This remains unresolved pending written customer/instructor acceptance. Do not claim Swing fulfills the web requirement. Keep domain/service logic independent enough that a future web front end could reuse it, but do not design or implement an unauthorized web deliverable.
 
 ## Binding engineering constraints
 
 - Java 21; Apache Maven; Java Swing MVP; JUnit 5; PlantUML.
-- Layered OO packages: \`domain\`, \`service\`, \`repository\`, \`ui\`.
+- Layered OO packages: `domain`, `service`, `repository`, `ui`.
 - No Swing/AWT dependencies in domain/service/repository.
 - UI gathers input, invokes services, renders results; no business rules in UI.
 - Constructor injection at boundaries; prefer composition/SOLID.
@@ -191,7 +191,7 @@ Distinguish Customer Requirements (CR), Functional Requirements (FR), Non-Functi
 
 ## Required output location
 
-Write only under \`docs/ai-comparison/claude-code/\`. Do not overwrite the Spec Kit feature directory.
+Write only under `docs/ai-comparison/claude-code/`. Do not overwrite the Spec Kit feature directory.
 
 ### 1. architecture.md
 Architecture goals/scope/constraints/quality attributes; component/layer architecture; responsibilities/interfaces/dependency direction; runtime collaboration; persistence boundary and proposed storage (label as proposal if not specified); security/privacy/audit/error/logging/performance; future web-client extension path without claiming web MVP; alternatives/trade-offs; AD decision register with status, rationale, consequences, and requirement traceability.
@@ -261,23 +261,23 @@ Compare both sets and independently cross-check them against the source of truth
 Read the full contents of:
 
 **Authoritative sources**
-1. \`UserRequirement.md\`
-2. \`.specify/memory/constitution.md\`
-3. \`specs/001-splitsmart-expense-sharing/spec.md\`
+1. `UserRequirement.md`
+2. `.specify/memory/constitution.md`
+3. `specs/001-splitsmart-expense-sharing/spec.md`
 
 **Spec Kit set**
-- \`plan.md\`, \`research.md\`, \`data-model.md\`
-- Every file in \`contracts/\`
-- \`quickstart.md\`
+- `plan.md`, `research.md`, `data-model.md`
+- Every file in `contracts/`
+- `quickstart.md`
 - All PlantUML diagrams
 - Completion report
 
 **Claude Code set**
-- \`architecture.md\`, \`design.md\`, \`data-model.md\`
-- Every file in \`contracts/\`
-- \`quickstart.md\`
+- `architecture.md`, `design.md`, `data-model.md`
+- Every file in `contracts/`
+- `quickstart.md`
 - All PlantUML diagrams
-- \`open-questions-and-risks.md\`
+- `open-questions-and-risks.md`
 - Completion report
 
 List missing/inaccessible inputs. Do not infer contents. Continue with qualifications unless missing evidence prevents a reliable conclusion.
