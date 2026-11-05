@@ -1,0 +1,52 @@
+@startuml deployment
+!pragma layout smetana
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written sources: docs/architecture/architecture.md section 2 (Runtime and deployment),
+' and DEC-03 in specs/001-splitsmart-expense-sharing/decisions/decision-log.md.
+' Layer dependencies are not drawn here. See component.puml.
+title SplitSmart MVP Deployment (conditional draft: OC-1 open)
+
+skinparam componentStyle rectangle
+
+node "User's computer\n(one computer, one signed-in user at a time)" as Computer {
+  node "JVM process\n(the one running application process)" as Jvm {
+    component "Swing UI layer" as Ui
+    component "Service layer" as Service
+    component "Domain layer" as Domain
+    component "Repository layer" as Repository
+    Ui -[hidden]down- Service
+    Service -[hidden]down- Domain
+    Domain -[hidden]down- Repository
+  }
+
+  rectangle "Exclusive single-instance lock\n(held through the one exclusive\ndatabase connection)" as Lock
+
+  folder "Data folder: ${user.home}/.splitsmart\n(overridable with splitsmart.data.dir)" as DataFolder {
+    database "SQLite database file" as Db {
+      artifact "Receipt storage\n(receipts are held inside this file)" as Receipts
+    }
+  }
+
+  node "Second launch of the application" as SecondLaunch
+}
+
+Jvm --> Lock : holds
+Lock --> Db : protects
+SecondLaunch ..> Lock : cannot get the lock;\nshows a message and exits
+
+note top of Computer
+  **OC-1 (web vs. desktop) is still open.**
+  The customer asked for a primarily web-based product (CR-10).
+  This desktop deployment does not satisfy that request.
+  A web deployment would require redesign.
+end note
+
+note bottom of Computer
+  **Limits (DEC-03):**
+  People take turns on this computer and see each other's activity at next login.
+  Roommates on separate computers cannot share data.
+  Setting splitsmart.data.dir lets several OS accounts on this computer share a folder they can all write.
+  Network shares and cloud-synced folders are **unsupported**.
+end note
+
+@enduml

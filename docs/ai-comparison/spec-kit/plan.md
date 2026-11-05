@@ -94,11 +94,11 @@ addressed. **OC-1 restated**: Yes.
 layers. A rule-heavy Swing app would violate Principle III. Client and server would be a different product
 direction, and that decision belongs to OC-1.
 
-**Diagrams**: [layer-component](../../docs/uml/layer-component.puml),
-[domain-class](../../docs/uml/domain-class.puml),
-[expense-approval](../../docs/uml/expense-approval-sequence.puml),
-[payment-settlement](../../docs/uml/payment-settlement-sequence.puml),
-[notification](../../docs/uml/notification-sequence.puml).
+**Diagrams**: [layer-component](uml/layer-component.puml),
+[domain-class](uml/domain-class.puml),
+[expense-approval](uml/expense-approval-sequence.puml),
+[payment-settlement](uml/payment-settlement-sequence.puml),
+[notification](uml/notification-sequence.puml).
 
 ### Layers and responsibilities
 

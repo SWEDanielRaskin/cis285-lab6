@@ -2,7 +2,7 @@
 
 **Status**: Draft. AI-generated; not human reviewed (Constitution Principle VII).
 **Date**: 2026-11-04 | **Plan**: [plan.md](plan.md) | **Research**: [research.md](research.md)
-**Diagram**: [docs/uml/domain-class.puml](../../docs/uml/domain-class.puml)
+**Diagram**: [docs/uml/domain-class.puml](uml/domain-class.puml)
 
 This model describes logical data, not code or database migrations. Entity names come from the
 spec's Key Entities. Storage types are proposals (research R-10, R-11). `NC-n` items are open

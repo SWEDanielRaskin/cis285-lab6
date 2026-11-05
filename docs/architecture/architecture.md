@@ -18,7 +18,7 @@ Nothing here is designed for a browser, a server, or mobile devices. If DEC-01 r
 | Local SQLite database file | Yes | In the data folder; holds receipts too |
 | Web browser, mobile app, email, cloud storage, other computers | **No** | No external system exists in the MVP |
 
-**Runtime and deployment (DEC-03).** One JVM process, one exclusive database connection, one signed-in user at a time. The data folder is `${user.home}/.splitsmart`, overridable with `splitsmart.data.dir`. A second launch cannot get the exclusive lock, so it shows a message and exits.
+**Runtime and deployment (DEC-03).** One JVM process, one exclusive database connection, one signed-in user at a time. The data folder is `${user.home}/.splitsmart`, overridable with `splitsmart.data.dir`. A second launch cannot get the exclusive lock, so it shows a message and exits. See the [deployment diagram](../uml/deployment.puml).
 
 **Practical collaboration limit.** Roommates on separate computers cannot share data. On one computer, people see each other's activity at their next login. Notifications therefore cannot arrive from another person during a session. Every FR can pass while this limit remains, which is why DEC-03 and DEC-01 go to the customer.
 

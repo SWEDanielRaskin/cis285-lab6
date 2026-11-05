@@ -2,7 +2,7 @@
 
 **Status:** Draft — Reconciliation Incomplete. Not human reviewed (Principle VII). These diagrams are conditional on [DEC-01](../../specs/001-splitsmart-expense-sharing/decisions/decision-log.md#dec-01-platform-oc-1): they show a desktop MVP, which does **not** satisfy CR-10.
 
-**Compile check:** All 15 files compiled with PlantUML 1.2025.2 on 2026-11-05 and were rendered and inspected by eye. That shows valid syntax and readable layout. It is not named review, and no code exists to compare them with. `-checkonly` alone is not enough: during this work a layout-engine crash passed it and showed only when rendering, so render as well after editing. No generated images are committed. Class, component, use-case, and state diagrams use `!pragma layout smetana`, so Graphviz is not needed.
+**Compile check:** All 16 files compiled with PlantUML 1.2025.2 on 2026-11-05, and each was rendered and inspected by eye when it was written. That shows valid syntax and readable layout. It is not named review, and no code exists to compare them with. `-checkonly` alone is not enough: during this work a layout-engine crash passed it and showed only when rendering, so render as well after editing. No generated images are committed. Class, component, deployment, use-case, and state diagrams use `!pragma layout smetana`, so Graphviz is not needed.
 
 ```powershell
 java -jar plantuml.jar -checkonly "docs/uml/*.puml"
@@ -12,6 +12,7 @@ java -jar plantuml.jar -checkonly "docs/uml/*.puml"
 |---|---|---|---|
 | Use case | [use-case.puml](use-case.puml) | System boundary, actors, and MVP use cases UC-01 to UC-13. Deferred items are listed in the legend, not drawn | CR-01 to CR-09, FR-001 to FR-037 |
 | Component | [component.puml](component.puml) | Layers, interfaces, dependency direction, database, local-installation limit | Principle III, NFR-009, FR-040, DEC-03, DEC-05 |
+| Deployment | [deployment.puml](deployment.puml) | One computer, the single JVM process and its layers, the data folder, the SQLite file that holds receipts, the exclusive single-instance lock, and the OC-1 limit | DEC-01, DEC-03, CR-10 (not satisfied) |
 | Class | [domain-class.puml](domain-class.puml) | Value objects and enums, persisted entities, and derived types, with attributes, operations, multiplicities, and constraints | FR-001 to FR-037, NFR-001, NFR-006 |
 | Class | [service-class.puml](service-class.puml) | Service interfaces and implementations, collaborators, commands, errors, and repository operations. Names match the contracts | All MVP FRs, FR-015, NFR-003, NFR-009 |
 | Sequence | [expense-approval-sequence.puml](expense-approval-sequence.puml) | Create, edit, delete, approve, and reject, with invalid-field, unauthorized, stale-version, and conflict paths | FR-010 to FR-017, FR-020 to FR-024 |
@@ -33,7 +34,7 @@ java -jar plantuml.jar -checkonly "docs/uml/*.puml"
 | Payment state machine | A payment takes effect when saved and never changes (FR-031, NFR-006). Confirmation is a question to the user before a record exists, so a state diagram would invent states the data cannot represent. See the payment sequence and activity diagrams |
 | Separate expense-creation sequence | Creation is the first section of `expense-approval-sequence.puml`, which keeps one authoritative operation order |
 | Notification state machine | Unread and Read are one nullable field. `notification-sequence.puml` shows the transitions |
-| Web, mobile, or deployment diagrams | Not part of this MVP. See DEC-01 and DEC-02 |
+| Web or mobile diagrams | Not part of this MVP. See DEC-01 and DEC-02 |
 
 ## Reading conventions
 
