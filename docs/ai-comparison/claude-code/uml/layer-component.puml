@@ -1,0 +1,87 @@
+@startuml layer-component
+' AI-generated draft. Not reviewed. Not rendered: PlantUML was unavailable when authored.
+title SplitSmart layers and components (proposal)\nThe Swing MVP does NOT satisfy CR-10. OC-1 is open pending written acceptance.
+
+skinparam componentStyle rectangle
+
+package "com.splitsmart.app" as app {
+  component "SplitSmartApp\n(composition root, AD-01)" as Root
+}
+
+package "com.splitsmart.ui (Swing, on EDT; ID-03)" as ui {
+  component "Panels\nLoginPanel, RegisterPanel, HomePanel,\nGroupListPanel, GroupDetailPanel,\nExpenseFormPanel, ExpenseDetailPanel, ReceiptViewerDialog,\nPendingApprovalsPanel, BalancesPanel, GroupBalancesPanel,\nPaymentFormPanel, PaymentHistoryPanel,\nNotificationsPanel, ReportPanel, MainFrame" as Panels
+  component "Controllers\nSessionController, GroupController, ExpenseController,\nApprovalController, BalanceController, PaymentController,\nNotificationController, ReportController" as Controllers
+  component "UiTaskRunner\n(SwingWorker)" as Runner
+}
+
+package "com.splitsmart.service (no GUI types)" as service {
+  component "Service interfaces and Default* implementations\nAccountService, GroupService, ExpenseService,\nApprovalService, BalanceService, PaymentService,\nNotificationService, ReportService" as Services
+  component "AccessPolicy\nFR-003, NFR-003" as Access
+  component "LedgerReader\nNotificationDispatcher\nPasswordHasher\nExpenseDraftValidator\nFieldFormats" as Helpers
+}
+
+package "com.splitsmart.domain (JDK only, no GUI types)" as domain {
+  component "Entities\nUser, Group, Membership, Expense,\nApprovalDecision, Payment, Notification" as Entities
+  component "Value objects\nMoney, Percentage, Share,\nLedgerEntry, ..." as Values
+  component "Pure calculators\nSplitAllocator, BalanceCalculator,\nReportCalculator" as Calculators
+}
+
+package "com.splitsmart.repository (no GUI types)" as repository {
+  interface "Repository interfaces\nand TransactionRunner" as RepoApi
+}
+
+package "com.splitsmart.repository.jdbc" as jdbc {
+  component "JDBC implementations\nFR-040, NFR-005" as Jdbc
+}
+
+database "Embedded H2 file\n(AD-07 proposal)" as H2
+
+Panels --> Controllers : events
+Controllers --> Runner : schedule
+Runner --> Services : off-EDT call
+Controllers --> Values : read-only values
+Services --> Access
+Services --> Helpers
+Services --> Entities
+Services --> Calculators
+Services --> RepoApi
+Helpers --> RepoApi
+Access --> RepoApi
+Jdbc ..|> RepoApi : implements
+Jdbc --> Entities : maps
+Jdbc --> H2 : SQL
+RepoApi --> Entities
+Entities --> Values
+Calculators --> Values
+
+Root ..> Panels : constructs
+Root ..> Services : constructs
+Root ..> Jdbc : constructs
+
+note top of service
+  Authorization and input parsing live here, reached from every UI action.
+  FR-003: a user sees only their own groups and related data.
+end note
+
+note bottom of domain
+  Forbidden everywhere except ui: javax.swing, java.awt, javax.imageio.
+  AD-22 enforces this. Principle III.
+end note
+
+note right of ui
+  Gathers input, calls services, renders results.
+  No business rules or balance calculations.
+end note
+
+note as PostMVP
+  **Post-MVP. Not designed or built here:**
+  FR-009 archive groups
+  FR-018 external notifications
+  FR-025 multi-level approval
+  FR-038 saved reports and export
+  FR-039 web browser access (OC-1)
+  A future web client would call the service layer in place of ui.
+  It is not authorized and not part of this design.
+end note
+
+@enduml

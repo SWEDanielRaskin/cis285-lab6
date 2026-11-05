@@ -1,0 +1,71 @@
+@startuml notification
+' AI-generated draft. Not reviewed. Not rendered: PlantUML was unavailable when authored.
+title Notifications (proposal)\nFR-017, FR-019, FR-023. In-app only (ID-08); FR-018 is Post-MVP. Draft pending human review
+
+participant "ExpenseService\nApprovalService" as Caller
+participant "NotificationDispatcher" as Disp
+participant "MembershipRepository" as Members
+participant "NotificationRepository" as Repo
+actor "Recipient" as User
+participant "HomePanel" as Home
+participant "NotificationsPanel" as Panel
+participant "NotificationController" as Ctrl
+participant "NotificationService" as Svc
+participant "AccessPolicy" as Access
+
+== New expense, inside the creating transaction. FR-017, AD-09 ==
+
+Caller -> Disp : expenseCreated(expense)
+Disp -> Members : listActiveMembers(group)
+Members --> Disp : current members only
+note right of Disp
+  Recipients: every current member except the creator.
+  Former members receive nothing (Scenario 7.4).
+  Content snapshot: creator, group, description, amount, date.
+end note
+Disp -> Repo : insertAll(notifications)
+note right of Repo : Commits together with the expense,\nso it cannot be lost after a save (SC-006)
+
+== Decision, inside the deciding transaction. FR-023 ==
+
+Caller -> Disp : expenseDecided(expense, decision)
+Disp -> Repo : insertAll(one notification to the creator, with reason if rejected)
+
+== At login and on return to Home. FR-019 ==
+
+User -> Home : log in or return to Home
+Home -> Ctrl : refresh
+Ctrl -> Svc : unreadCount(session)
+Svc -> Access : visibleGroupScope(session)
+Svc -> Repo : countUnread(user, scope)
+Repo --> Svc : count
+Svc --> Ctrl : count
+Ctrl --> Home : show unread count
+note right of Home : Notifications from while logged out appear here.\nOne session at a time, so no polling (AD-24).
+
+== Open the list. FR-019 ==
+
+User -> Panel : open Notifications
+Panel -> Ctrl : load
+Ctrl -> Svc : list(session)
+Svc -> Repo : listForRecipient(user, scope)
+Repo --> Svc : rows, newest first
+note right of Svc
+  FR-017: needsApproval is derived on each read:
+    type = NEW_EXPENSE
+    and expense is PENDING
+    and recipient is a participant other than the creator
+  Never stored, so it disappears once decided.
+end note
+Svc --> Ctrl : NotificationView list
+Ctrl --> Panel : render
+
+== Mark read. FR-019 ==
+
+User -> Panel : mark read
+Panel -> Ctrl : selected ids
+Ctrl -> Svc : markRead(session, ids)
+Svc -> Repo : markRead(user, ids, now)
+note right of Repo : Restricted to the recipient's own rows
+
+@enduml

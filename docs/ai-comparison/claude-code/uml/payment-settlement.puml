@@ -1,0 +1,72 @@
+@startuml payment-settlement
+' AI-generated draft. Not reviewed. Not rendered: PlantUML was unavailable when authored.
+title Payment settlement (proposal)\nFR-030, FR-031, FR-032, FR-033, FR-027. Draft pending human review
+
+actor "Payer\n(signed-in user)" as Payer
+participant "PaymentFormPanel" as Panel
+participant "PaymentController" as Ctrl
+participant "PaymentService" as Svc
+participant "AccessPolicy" as Access
+participant "TransactionRunner" as Tx
+participant "LedgerReader" as Reader
+participant "LedgerQueryRepository" as Ledger
+participant "BalanceCalculator" as Calc
+participant "Payment" as Pay
+participant "PaymentRepository" as Repo
+
+Payer -> Panel : amount, date, group, recipient, optional note
+Panel -> Ctrl : submit raw values
+Ctrl -> Svc : recordPayment(session, draft without acknowledgedOwed)
+
+Svc -> Svc : parse and validate fields (FR-030)
+alt invalid: amount not above 0, over 2 decimals, future date, no group, self-payment
+  Svc --> Ctrl : ValidationException
+  Ctrl --> Panel : field errors, input kept
+else valid
+  Svc -> Tx : inTransaction
+  activate Tx
+  Tx -> Access : requireActiveMember for payer and recipient (FR-030)
+  Tx -> Reader : owedBy(payer, recipient, group)
+  Reader -> Ledger : entriesForPair(group, payer, recipient)
+  note right of Ledger : Approved expense shares and payments only.\nOnly the named group (FR-027).
+  Reader -> Calc : calculate(entries)
+  Calc --> Reader : BalanceSheet
+  Reader --> Tx : owedNow = max(0, payer's net debt)
+
+  alt amount above owedNow and acknowledgedOwed absent or different (FR-032, AD-13)
+    Tx --> Svc : nothing written
+    Svc --> Ctrl : OverpaymentWarning(owedNow, attempted)
+    Ctrl --> Panel : confirmation dialog
+    alt user confirms
+      Panel -> Ctrl : confirm
+      Ctrl -> Svc : recordPayment(session, draft with acknowledgedOwed = owedNow)
+      note right of Svc : Runs this flow again. A changed owed amount\nproduces a fresh warning.
+    else user cancels
+      Panel --> Payer : form retained, no payment recorded
+    end
+  else amount within owedNow, or acknowledged amount matches
+    Tx -> Pay : create(...)
+    note right of Pay : overpaymentConfirmed recorded for audit.\nImmutable (NFR-006).
+    Tx -> Repo : insert(payment)
+    note right of Repo : FR-031: applies at commit.\nNo recipient confirmation.\nBalance is derived, so no balance row changes.
+    Svc --> Ctrl : Recorded(paymentView)
+    Ctrl --> Panel : confirmation, refresh balances
+  end
+  deactivate Tx
+end
+
+== History. FR-033 ==
+
+Payer -> Ctrl : open history
+Ctrl -> Svc : paymentHistory(session, group)
+Svc -> Repo : listForUser(user, group)
+note right of Repo : Same records visible to payer and recipient
+Svc --> Ctrl : payment views
+
+note over Svc, Repo
+  Worked example, Scenario 6.2: sam owes alex 30.00, sam pays 40.00.
+  Warning shown, then confirmed. Entries: sam owes alex 30.00; alex owes sam 40.00.
+  Net: alex owes sam 10.00.
+end note
+
+@enduml

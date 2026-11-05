@@ -1,0 +1,89 @@
+@startuml layer-component
+' Status: Draft. AI-generated; not human reviewed (Constitution Principle VII).
+' Syntax not yet checked: PlantUML is not available on the authoring machine.
+' Written design: specs/001-splitsmart-expense-sharing/plan.md
+title SplitSmart Layers and Dependency Direction (Swing MVP, Draft)
+
+skinparam componentStyle rectangle
+
+package "app" {
+  [SplitSmartApplication] as App
+  [AppConfig] as Config
+}
+
+package "ui (Swing: ID-03)" {
+  [Views\nMainFrame, panels, dialogs] as Views
+  [Controllers] as Controllers
+  [Session] as Session
+  [UiAsync\nSwingWorker] as UiAsync
+  [DisplayFormats, ErrorPresenter] as UiSupport
+}
+
+package "service" {
+  [Use-case services\nAccount, Group, Expense, Approval,\nNotification, Balance, Payment, Report] as Services
+  [AccessPolicy] as Access
+  [PasswordHasher] as Hasher
+}
+
+package "domain" {
+  [Entities\nUser, Group, Membership, Expense,\nShare, ApprovalDecision, Payment, Notification] as Entities
+  [Value objects\nMoney, Percentage, IDs] as Values
+  [Policies\nSplitAllocator, BalanceLedger] as Policies
+  [Report model] as ReportModel
+}
+
+package "repository" {
+  interface "Repository interfaces\nand TransactionManager" as RepoApi
+  package "repository.sqlite (proposed: PD-06)" {
+    [SQLite implementations] as RepoImpl
+  }
+}
+
+database "SQLite file\n(FR-040, NFR-005)" as Db
+
+Views --> Controllers
+Controllers --> UiAsync
+Controllers --> Session
+Views --> UiSupport
+Controllers --> Services : calls off the EDT
+
+Services --> Access
+Services --> Hasher
+Services --> Entities
+Services --> Values
+Services --> Policies
+Services --> ReportModel
+Services --> RepoApi
+
+Policies --> Entities
+Policies --> Values
+Entities --> Values
+
+RepoImpl ..|> RepoApi
+RepoImpl --> Entities
+RepoImpl --> Values
+RepoImpl --> Db
+
+App --> Config
+App --> Views : creates
+App --> Services : creates
+App --> RepoImpl : creates
+
+note right of Services
+  No javax.swing or java.awt in domain, service, or repository
+  (Principle III). Checked by a JUnit 5 source scan (PD-14).
+  All FR permission checks run here, not in ui (FR-003, NFR-003).
+end note
+
+note bottom of Db
+  Storage choice is a proposal,
+  not a constitution decision.
+end note
+
+note left of Views
+  OC-1: Swing is implementation decision ID-03.
+  It does NOT satisfy CR-10 (primarily web-based).
+  OC-1 remains unresolved.
+end note
+
+@enduml

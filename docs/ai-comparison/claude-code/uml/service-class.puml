@@ -1,0 +1,243 @@
+@startuml service-class
+' AI-generated draft. Not reviewed. Not rendered: PlantUML was unavailable when authored.
+' Principle VI asks for a class diagram of domain AND service classes; this adds the service side.
+title SplitSmart services and repositories (proposal)\nDraft pending human review
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+package "com.splitsmart.service" {
+
+  interface AccountService {
+    +register(RegisterCommand) : UserSummary
+    +login(LoginCommand) : Session
+    +logout(Session)
+  }
+  note right of AccountService : FR-001, FR-002, FR-004
+
+  interface GroupService {
+    +createGroup(Session, nameText)
+    +renameGroup(Session, GroupId, nameText)
+    +addMember(Session, GroupId, usernameText)
+    +removeMember(Session, GroupId, UserId)
+    +leaveGroup(Session, GroupId)
+    +listMyGroups(Session)
+    +getGroupDetail(Session, GroupId) : GroupDetailView
+  }
+  note right of GroupService : FR-005, FR-006, FR-007, FR-008
+
+  interface ExpenseService {
+    +createExpense(Session, ExpenseDraft, ReceiptUpload)
+    +updateExpense(Session, ExpenseId, version, ExpenseDraft, ReceiptChange)
+    +deleteExpense(Session, ExpenseId, version)
+    +getExpense(Session, ExpenseId)
+    +listGroupExpenses(Session, GroupId, statuses)
+    +getReceipt(Session, ExpenseId)
+  }
+  note right of ExpenseService : FR-010, FR-014, FR-015, FR-016
+
+  interface ApprovalService {
+    +approve(Session, ExpenseId, version, reasonText)
+    +reject(Session, ExpenseId, version, reasonText)
+    +listPendingForMe(Session)
+  }
+  note right of ApprovalService : FR-021
+
+  interface BalanceService {
+    +myBalances(Session)
+    +groupBalances(Session, GroupId)
+  }
+  note right of BalanceService : FR-027, FR-028
+
+  interface PaymentService {
+    +recordPayment(Session, PaymentDraft) : PaymentOutcome
+    +paymentHistory(Session, GroupId)
+  }
+  note right of PaymentService : FR-030, FR-032, FR-033
+
+  interface NotificationService {
+    +unreadCount(Session)
+    +list(Session)
+    +markRead(Session, ids)
+  }
+  note right of NotificationService : FR-019
+
+  interface ReportService {
+    +filterOptions(Session)
+    +generate(Session, ReportFilterInput) : Report
+  }
+  note right of ReportService : FR-034, FR-035, FR-036, FR-037
+
+  class DefaultAccountService
+  class DefaultGroupService
+  class DefaultExpenseService
+  class DefaultApprovalService
+  class DefaultBalanceService
+  class DefaultPaymentService
+  class DefaultNotificationService
+  class DefaultReportService
+
+  class Session <<value object>> {
+    -userId : UserId
+    -displayName : String
+    -startedAt : Instant
+  }
+
+  class AccessPolicy {
+    +requireActiveMember(Session, GroupId)
+    +requireAdmin(Session, GroupId)
+    +requireExpenseReadable(Session, Expense)
+    +requireReceiptReadable(Session, Expense)
+    +visibleGroupScope(Session)
+  }
+  note left of AccessPolicy : FR-003, NFR-003 (AD-03, AD-17)
+
+  class LedgerReader {
+    +sheetForGroups(groups) : BalanceSheet
+    +owedBy(payer, recipient, group) : Money
+    +involving(group, user) : BalanceSheet
+  }
+  note left of LedgerReader : FR-007, FR-026, FR-027, FR-032, FR-037
+
+  class NotificationDispatcher {
+    +expenseCreated(Expense)
+    +expenseRevised(Expense)
+    +expenseDecided(Expense, ApprovalDecision)
+  }
+  note left of NotificationDispatcher : FR-017; sole creator of notifications
+
+  interface PasswordHasher {
+    +hash(char[]) : PasswordHash
+    +verify(char[], PasswordHash) : boolean
+  }
+  class Pbkdf2PasswordHasher
+  note left of PasswordHasher : FR-004, NFR-002
+
+  class ExpenseDraftValidator {
+    +validate(ExpenseDraft) : ValidatedDraft
+  }
+  note left of ExpenseDraftValidator : FR-010, FR-015\nCollects every FieldError
+
+  class FieldFormats {
+    +{static} parseDate(text)
+    +{static} date(LocalDate)
+    +{static} money(Money)
+  }
+  note left of FieldFormats : FR-041
+
+  class PaymentOutcome <<sealed>>
+  class Recorded <<record>>
+  class OverpaymentWarning <<record>> {
+    -owedNow : Money
+    -attempted : Money
+  }
+
+  abstract class ServiceException <<sealed>>
+  class ValidationException {
+    -errors : List<FieldError>
+  }
+  class AuthenticationFailedException
+  class AccountLockedException
+  class AccessDeniedException
+  class NotFoundException
+  class ConflictException
+  class BusinessRuleException
+  class PersistenceFailureException
+  class FieldError <<record>> {
+    -field : String
+    -message : String
+  }
+}
+
+package "com.splitsmart.repository" {
+  interface UserRepository
+  interface GroupRepository
+  interface MembershipRepository
+  interface ExpenseRepository
+  interface ReceiptRepository
+  interface ApprovalDecisionRepository <<append-only>>
+  interface PaymentRepository <<append-only>>
+  interface NotificationRepository
+  interface LedgerQueryRepository <<read-only>>
+  interface TransactionRunner
+  class RepositoryException <<exception>>
+  class DuplicateKeyException <<exception>>
+}
+
+RepositoryException <|-- DuplicateKeyException
+
+AccountService <|.. DefaultAccountService
+GroupService <|.. DefaultGroupService
+ExpenseService <|.. DefaultExpenseService
+ApprovalService <|.. DefaultApprovalService
+BalanceService <|.. DefaultBalanceService
+PaymentService <|.. DefaultPaymentService
+NotificationService <|.. DefaultNotificationService
+ReportService <|.. DefaultReportService
+PasswordHasher <|.. Pbkdf2PasswordHasher
+
+DefaultAccountService --> UserRepository
+DefaultAccountService --> PasswordHasher
+
+DefaultGroupService --> GroupRepository
+DefaultGroupService --> MembershipRepository
+DefaultGroupService --> UserRepository
+DefaultGroupService --> ExpenseRepository
+DefaultGroupService --> LedgerReader
+DefaultGroupService --> AccessPolicy
+
+DefaultExpenseService --> ExpenseRepository
+DefaultExpenseService --> ReceiptRepository
+DefaultExpenseService --> MembershipRepository
+DefaultExpenseService --> ApprovalDecisionRepository
+DefaultExpenseService --> ExpenseDraftValidator
+DefaultExpenseService --> NotificationDispatcher
+DefaultExpenseService --> AccessPolicy
+
+DefaultApprovalService --> ExpenseRepository
+DefaultApprovalService --> ApprovalDecisionRepository
+DefaultApprovalService --> NotificationDispatcher
+DefaultApprovalService --> AccessPolicy
+
+DefaultBalanceService --> LedgerReader
+DefaultBalanceService --> MembershipRepository
+DefaultBalanceService --> AccessPolicy
+
+DefaultPaymentService --> PaymentRepository
+DefaultPaymentService --> LedgerReader
+DefaultPaymentService --> AccessPolicy
+
+DefaultNotificationService --> NotificationRepository
+DefaultNotificationService --> AccessPolicy
+
+DefaultReportService --> ExpenseRepository
+DefaultReportService --> PaymentRepository
+DefaultReportService --> MembershipRepository
+DefaultReportService --> LedgerReader
+DefaultReportService --> AccessPolicy
+
+LedgerReader --> LedgerQueryRepository
+NotificationDispatcher --> NotificationRepository
+NotificationDispatcher --> MembershipRepository
+AccessPolicy --> MembershipRepository
+AccessPolicy --> GroupRepository
+
+PaymentOutcome <|-- Recorded
+PaymentOutcome <|-- OverpaymentWarning
+ServiceException <|-- ValidationException
+ServiceException <|-- AuthenticationFailedException
+ServiceException <|-- AccountLockedException
+ServiceException <|-- AccessDeniedException
+ServiceException <|-- NotFoundException
+ServiceException <|-- ConflictException
+ServiceException <|-- BusinessRuleException
+ServiceException <|-- PersistenceFailureException
+ValidationException *-- FieldError
+
+note bottom of TransactionRunner
+  Every Default*Service also receives TransactionRunner, and Clock where it needs time.
+  DefaultExpenseService uses SplitAllocator; DefaultReportService uses ReportCalculator.
+  Those lines are omitted for readability. FR-040, AD-09.
+end note
+
+@enduml

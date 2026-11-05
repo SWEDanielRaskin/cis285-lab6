@@ -1,0 +1,120 @@
+@startuml expense-creation-approval
+' AI-generated draft. Not reviewed. Not rendered: PlantUML was unavailable when authored.
+title Expense creation, edit or delete, and approval (proposal)\nDraft pending human review
+
+actor "Creator" as Creator
+actor "Approver\n(non-creator participant)" as Approver
+participant "ExpenseFormPanel\nExpenseDetailPanel" as Panel
+participant "ExpenseController\nApprovalController" as Ctrl
+participant "ExpenseService" as ExpSvc
+participant "ApprovalService" as ApprSvc
+participant "ExpenseDraftValidator" as Validator
+participant "AccessPolicy" as Access
+participant "TransactionRunner" as Tx
+participant "SplitAllocator" as Alloc
+participant "Expense" as Exp
+participant "ExpenseRepository" as ExpRepo
+participant "ReceiptRepository" as RcptRepo
+participant "ApprovalDecisionRepository" as DecRepo
+participant "NotificationDispatcher" as Disp
+
+== Create. FR-010, FR-011, FR-012, FR-013, FR-014, FR-015, FR-017, FR-020 ==
+
+Creator -> Panel : enter amount, date, description, payer,\nordered participants, split, optional receipt
+Panel -> Ctrl : submit raw values
+note right of Ctrl : Runs off the EDT through UiTaskRunner. No rule logic here.
+Ctrl -> ExpSvc : createExpense(session, draft, receipt)
+ExpSvc -> Validator : validate(draft)
+
+alt any field invalid (FR-015)
+  Validator --> ExpSvc : FieldErrors
+  ExpSvc --> Ctrl : ValidationException
+  Ctrl --> Panel : show each field error, keep all input
+else valid
+  Validator --> ExpSvc : validated values
+  ExpSvc -> Tx : inTransaction
+  activate Tx
+  Tx -> Access : requireActiveMember(session, group)
+  Tx -> Alloc : allocate(amount, splitRequest)
+  note right of Alloc
+    FR-011, FR-013: floor each share to the cent
+    FR-012: one leftover cent at a time, in listed order
+    Total of shares equals amount exactly
+  end note
+  Alloc --> Tx : ordered shares
+  Tx -> Exp : create(...)
+  note right of Exp : FR-020: status PENDING.\nNo ledger entries while pending.
+  Tx -> ExpRepo : insert(expense)
+  opt receipt supplied (FR-014)
+    Tx -> RcptRepo : put(expenseId, receipt)
+  end
+  Tx -> Disp : expenseCreated(expense)
+  note right of Disp : FR-017: all other current members.\nSee notification.puml.
+  deactivate Tx
+  ExpSvc --> Ctrl : ExpenseDetailView
+  Ctrl --> Panel : render shares in listed order
+end
+
+== Edit or delete while Pending. FR-016 ==
+
+Creator -> ExpSvc : updateExpense(session, id, expectedVersion, draft, receiptChange)
+ExpSvc -> Tx : inTransaction
+activate Tx
+Tx -> Exp : revise(actor, ...)
+Tx -> ExpRepo : updateIfVersionMatches(expense, expectedVersion)
+alt false: decided or changed
+  ExpRepo --> ExpSvc : false
+  ExpSvc --> Creator : ConflictException
+else true
+  Tx -> Disp : expenseRevised(expense)
+  note right of Disp : AD-14. NEEDS CLARIFICATION DQ-06.
+end
+deactivate Tx
+
+Creator -> ExpSvc : deleteExpense(session, id, expectedVersion)
+ExpSvc -> ExpRepo : deleteIfPending(id, expectedVersion)
+note right of ExpRepo : Approved and Rejected can never be\nedited or deleted (FR-016)
+
+== Approve or reject. FR-021, FR-022, FR-023, FR-024 ==
+
+Approver -> Panel : open expense
+Panel -> Ctrl : load
+Ctrl -> ExpSvc : getExpense(session, id)
+ExpSvc --> Panel : detail view with canDecide and version
+
+alt approve
+  Approver -> Ctrl : Approve
+  Ctrl -> ApprSvc : approve(session, id, expectedVersion, reason)
+else reject
+  Approver -> Ctrl : Reject with reason
+  Ctrl -> ApprSvc : reject(session, id, expectedVersion, reason)
+  note right of ApprSvc : FR-023: reason required, 1 to 200 characters
+end
+
+ApprSvc -> Tx : inTransaction
+activate Tx
+Tx -> ExpRepo : findById(id)
+Tx -> Access : requireActiveMember(session, group)
+Tx -> Exp : approve(approver, now) or reject(approver, reason, now)
+
+alt approver is creator or not a participant (FR-021, FR-022)
+  Exp --> ApprSvc : refused
+  ApprSvc --> Ctrl : AccessDeniedException
+else eligible
+  Exp --> Tx : ApprovalDecision
+  Tx -> ExpRepo : updateStatusIfPending(id, expectedVersion, status, now)
+  alt false: another decision or an edit won (AD-10)
+    ExpRepo --> Tx : false
+    Tx --> ApprSvc : ConflictException, rollback
+    ApprSvc --> Ctrl : "no longer pending" or "changed, review again"
+  else true
+    Tx -> DecRepo : insert(decision)
+    note right of DecRepo : FR-024, NFR-006: append-only.\nUnique per expense.
+    Tx -> Disp : expenseDecided(expense, decision)
+    note right of Disp : FR-023: creator notified, with reason if any
+    note over Tx : Commit: an Approved expense now counts in balances (FR-026, FR-027)
+  end
+end
+deactivate Tx
+
+@enduml

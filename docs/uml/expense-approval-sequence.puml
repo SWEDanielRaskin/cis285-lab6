@@ -1,0 +1,79 @@
+@startuml expense-approval-sequence
+' Status: Draft. AI-generated; not human reviewed (Constitution Principle VII).
+' Syntax not yet checked: PlantUML is not available on the authoring machine.
+' Written design: specs/001-splitsmart-expense-sharing/contracts/service-contracts.md
+title Expense Creation and Approval (FR-010 to FR-017, FR-020 to FR-024; Draft)
+
+actor "Creator" as Creator
+actor "Approver\n(participant, not creator)" as Approver
+participant "ExpenseFormDialog\nExpenseController" as ExpenseUi
+participant "ExpenseDetailDialog\nApprovalController" as ApprovalUi
+participant ExpenseService
+participant ApprovalService
+participant AccessPolicy
+participant "Expense" as ExpenseEntity
+participant SplitAllocator
+participant NotificationService
+participant TransactionManager
+database Repositories
+
+== Create (FR-010 to FR-015, FR-017, FR-020) ==
+Creator -> ExpenseUi : enter fields and ordered participants
+ExpenseUi -> ExpenseService : createExpense(actor, input)
+note right of ExpenseUi : Runs off the EDT. The UI computes no shares.
+ExpenseService -> AccessPolicy : requireMember(actor, groupId)
+ExpenseService -> ExpenseService : parse and validate all fields
+alt any field invalid (FR-015)
+  ExpenseService --> ExpenseUi : ValidationException(all field errors)
+  ExpenseUi --> Creator : mark fields; keep entered data
+else valid
+  ExpenseService -> SplitAllocator : allocate(amount, ordered participants)
+  note right of SplitAllocator
+    FR-011 to FR-013: floor each share, then
+    leftover cents one each in saved order
+  end note
+  SplitAllocator --> ExpenseService : shares totaling the amount exactly
+  ExpenseService -> ExpenseEntity : create(...) with status PENDING
+  ExpenseService -> TransactionManager : inTransaction
+  activate TransactionManager
+  ExpenseService -> Repositories : insert expense, shares, receipt
+  ExpenseService -> NotificationService : notifyExpenseCreated(expense)
+  NotificationService -> Repositories : insert notifications (see notification diagram)
+  deactivate TransactionManager
+  ExpenseService --> ExpenseUi : ExpenseDetail (PENDING)
+  ExpenseUi --> Creator : show shares. Balances are unchanged (FR-020)
+end
+
+== Decide (FR-021 to FR-024) ==
+Approver -> ApprovalUi : approve, or reject with reason
+ApprovalUi -> ApprovalService : approve or reject(actor, id, version, reason)
+ApprovalService -> Repositories : findById(id)
+ApprovalService -> ExpenseEntity : isEligibleApprover(actor)
+alt not eligible, including the creator (FR-021, FR-022)
+  ApprovalService --> ApprovalUi : AuthorizationException
+else rejection without a valid reason (FR-023)
+  ApprovalService --> ApprovalUi : ValidationException
+else eligible
+  ApprovalService -> TransactionManager : inTransaction
+  activate TransactionManager
+  ApprovalService -> Repositories : decideIfPending(id, version, status)
+  alt already decided or stale version (Edge Cases: first decision wins)
+    Repositories --> ApprovalService : false
+    ApprovalService --> ApprovalUi : ConflictException (rollback)
+    ApprovalUi --> Approver : no longer pending; reload
+  else updated
+    Repositories --> ApprovalService : true
+    ApprovalService -> Repositories : insert immutable ApprovalDecision (FR-024, NFR-006)
+    ApprovalService -> NotificationService : notifyExpenseDecided(expense, decision)
+    NotificationService -> Repositories : insert creator notification (FR-023)
+    deactivate TransactionManager
+    ApprovalService --> ApprovalUi : ApprovalDecisionView
+    alt approved
+      ApprovalUi --> Approver : Approved. Now counted in balances
+    else rejected
+      ApprovalUi --> Approver : Rejected. Never counted in balances
+    end
+  end
+end
+
+@enduml

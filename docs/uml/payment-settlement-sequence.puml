@@ -1,0 +1,57 @@
+@startuml payment-settlement-sequence
+' Status: Draft. AI-generated; not human reviewed (Constitution Principle VII).
+' Syntax not yet checked: PlantUML is not available on the authoring machine.
+' Written design: specs/001-splitsmart-expense-sharing/contracts/service-contracts.md
+title Payment Settlement (FR-030 to FR-033, FR-027; Draft)
+
+actor "Payer" as Payer
+participant "PaymentDialog\nPaymentController" as PaymentUi
+participant PaymentService
+participant AccessPolicy
+participant BalanceService
+participant BalanceLedger
+participant TransactionManager
+database Repositories
+
+Payer -> PaymentUi : enter group, recipient, amount, date, optional note
+PaymentUi -> PaymentService : recordPayment(actor, input, overpaymentConfirmed = false)
+note right of PaymentUi : Runs off the EDT. The UI does not compare amounts.
+PaymentService -> PaymentService : validate fields (FR-030)
+alt any field invalid, including missing group
+  PaymentService --> PaymentUi : ValidationException
+  PaymentUi --> Payer : mark fields; keep entered data
+else valid
+  PaymentService -> AccessPolicy : requireMember for actor and recipient
+  PaymentService -> TransactionManager : inTransaction
+  activate TransactionManager
+  PaymentService -> BalanceService : owedInGroup(groupId, payer, recipient)
+  BalanceService -> Repositories : APPROVED expenses and payments in the group
+  BalanceService -> BalanceLedger : from(records).net(recipient, payer)
+  BalanceLedger --> BalanceService : net
+  BalanceService --> PaymentService : amount owed (0 or more)
+  alt amount exceeds owed and not confirmed (FR-032)
+    PaymentService --> PaymentUi : OverpaymentConfirmationRequiredException(owed, entered)
+    deactivate TransactionManager
+    PaymentUi --> Payer : warn; Cancel is the default
+    alt payer confirms
+      PaymentUi -> PaymentService : recordPayment(actor, input, overpaymentConfirmed = true)
+      note right of PaymentService
+        Repeats the same flow.
+        Amount owed is rechecked in a new transaction.
+      end note
+    else payer cancels
+      PaymentUi --> Payer : nothing is saved
+    end
+  else within owed, or confirmed
+    PaymentService -> Repositories : insert immutable Payment (NFR-006)
+    note right of Repositories
+      FR-031: applies at once; no recipient confirmation.
+      Balance changes because it is derived from this record.
+      No other group's balance changes.
+    end note
+    PaymentService --> PaymentUi : PaymentView
+    PaymentUi --> Payer : recorded; visible to payer and recipient (FR-033)
+  end
+end
+
+@enduml

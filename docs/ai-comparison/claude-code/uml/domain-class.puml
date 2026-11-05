@@ -1,0 +1,344 @@
+@startuml domain-class
+' AI-generated draft. Not reviewed. Not rendered: PlantUML was unavailable when authored.
+' Names and responsibilities must agree with design.md and data-model.md.
+title SplitSmart domain model (proposal)\nDraft pending human review. Swing MVP does not satisfy CR-10 (OC-1 open).
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+package "com.splitsmart.domain" {
+
+  class Money <<value object>> {
+    -value : BigDecimal {scale 2}
+    +{static} parseStrict(text) : Money
+    +{static} normalized(BigDecimal) : Money
+    +floorDividedBy(n) : Money
+    +floorPercent(Percentage) : Money
+    +plus(Money) : Money
+    +minus(Money) : Money
+    +times(n) : Money
+    +negated() : Money
+    +compareTo(Money) : int
+  }
+  note top of Money
+    FR-010, FR-011, FR-013, FR-030
+    Only class that sets money scale or rounding (AD-04):
+    HALF_EVEN in normalized; DOWN in floor methods.
+    parseStrict refuses excess decimals; it never rounds.
+  end note
+
+  class Percentage <<value object>> {
+    -value : BigDecimal {0.00..100.00}
+  }
+
+  class Username <<value object>> {
+    -text : String {3..30}
+    +key() : String
+  }
+
+  class PasswordHash <<value object>> {
+    -algorithm
+    -iterations
+    -salt
+    -hash
+  }
+  note bottom of PasswordHash : FR-004: never readable
+
+  class User {
+    -id : UserId
+    -username : Username
+    -displayName : String
+    -passwordHash : PasswordHash
+    -failedLoginCount : int
+    -lockedUntil : Instant
+    -createdAt : Instant
+    +isLockedAt(now) : boolean
+    +recordFailedLogin(now)
+    +recordSuccessfulLogin()
+  }
+  note left of User : FR-001, FR-002, FR-004\nNFR-002: 5 failures, 5-minute lock
+
+  class Group {
+    -id : GroupId
+    -name : String {1..50}
+    -adminId : UserId
+    -status : GroupStatus
+    -createdAt : Instant
+    -updatedAt : Instant
+    +rename(name)
+    +assignAdmin(userId)
+  }
+  note top of Group : FR-005, FR-006, FR-008\nFR-009 Post-MVP: ARCHIVED reserved
+
+  class Membership {
+    -id : MembershipId
+    -groupId : GroupId
+    -userId : UserId
+    -joinedAt : Instant
+    -addedBy : UserId
+    -leftAt : Instant
+    -endedBy : UserId
+    +isActive() : boolean
+    +end(now, actor)
+  }
+  note right of Membership : FR-005, FR-006, FR-008\nOne active row per user and group
+
+  class Expense {
+    -id : ExpenseId
+    -groupId : GroupId
+    -creatorId : UserId
+    -payerId : UserId
+    -amount : Money
+    -date : LocalDate
+    -description : String {1..200}
+    -splitMethod : SplitMethod
+    -status : ExpenseStatus
+    -shares : List<Share>
+    -createdAt : Instant
+    -updatedAt : Instant
+    -version : int
+    +{static} create(...) : Expense
+    +revise(actor, ...)
+    +isEligibleApprover(userId) : boolean
+    +approve(approver, now) : ApprovalDecision
+    +reject(approver, reason, now) : ApprovalDecision
+    +ledgerEntries() : List<LedgerEntry>
+  }
+  note top of Expense
+    FR-010, FR-016, FR-020, FR-021, FR-022, FR-024, FR-026
+    Starts PENDING. APPROVED and REJECTED are terminal.
+    ledgerEntries() is empty unless APPROVED.
+  end note
+
+  class Share <<value object>> {
+    -participantId : UserId
+    -position : int
+    -percentage : Percentage
+    -amount : Money
+  }
+  note bottom of Share : FR-012: position preserves listed order
+
+  abstract class SplitRequest <<sealed interface>>
+  class EqualSplit <<record>> {
+    -participants : List<UserId>
+  }
+  class PercentageSplit <<record>> {
+    -items : List<ParticipantPercentage>
+  }
+  class ParticipantPercentage <<record>> {
+    -userId : UserId
+    -percentage : Percentage
+  }
+
+  class SplitAllocator {
+    +allocate(amount : Money, request : SplitRequest) : List<Share>
+  }
+  note right of SplitAllocator
+    FR-011, FR-012, FR-013
+    Floor each share to the cent, then give one leftover
+    cent at a time in listed order. Shares total the amount.
+  end note
+
+  class ReceiptImage <<value object>> {
+    -mediaType : ReceiptMediaType
+    -content : byte[] {max 5 MB}
+    -sha256 : byte[]
+  }
+  note bottom of ReceiptImage : FR-014: signature and size only.\nNo AWT in domain (AD-08).
+
+  class ApprovalDecision {
+    -id : DecisionId
+    -expenseId : ExpenseId
+    -approverId : UserId
+    -outcome : DecisionOutcome
+    -reason : String
+    -decidedAt : Instant
+  }
+  note bottom of ApprovalDecision : FR-021, FR-022, FR-023, FR-024\nImmutable (NFR-006)
+
+  class Payment {
+    -id : PaymentId
+    -groupId : GroupId
+    -payerId : UserId
+    -recipientId : UserId
+    -amount : Money
+    -date : LocalDate
+    -note : String
+    -recordedAt : Instant
+    -overpaymentConfirmed : boolean
+    +ledgerEntry() : LedgerEntry
+  }
+  note bottom of Payment : FR-030, FR-031\nImmutable (NFR-006)
+
+  class Notification {
+    -id : NotificationId
+    -recipientId : UserId
+    -type : NotificationType
+    -groupId : GroupId
+    -expenseId : ExpenseId
+    -decisionId : DecisionId
+    -actorName : String
+    -groupName : String
+    -description : String
+    -amount : Money
+    -expenseDate : LocalDate
+    -reason : String
+    -createdAt : Instant
+    -readAt : Instant
+    +message() : String
+    +isRead() : boolean
+  }
+  note bottom of Notification : FR-017, FR-023\nNeeds-approval flag is derived at read time
+
+  class LedgerEntry <<value object>> {
+    -groupId : GroupId
+    -debtorId : UserId
+    -creditorId : UserId
+    -amount : Money
+    -date : LocalDate
+  }
+
+  class UserPair <<value object>> {
+    -lowId : UserId
+    -highId : UserId
+  }
+
+  class PairBalance <<value object>> {
+    -groupId : GroupId
+    -pair : UserPair
+    -net : Money
+  }
+
+  class BalanceCalculator {
+    +calculate(entries : List<LedgerEntry>) : BalanceSheet
+  }
+  note bottom of BalanceCalculator : FR-026, FR-027, FR-029\nOne signed net per pair and group
+
+  class BalanceSheet {
+    -balances : List<PairBalance>
+    +owedBy(debtor, creditor, group) : Money
+    +overall(a, b) : Money
+    +balancesFor(user) : List<PairBalance>
+  }
+
+  class ReportFilter <<value object>> {
+    -from : LocalDate
+    -to : LocalDate
+    -groupId : GroupId
+    -otherUserId : UserId
+    -statuses : Set<ExpenseStatus>
+  }
+  note right of ReportFilter : FR-035: inclusive dates, any combination
+
+  class ReportCalculator {
+    +calculate(...) : Report
+  }
+
+  class Report {
+    -filter : ReportFilter
+    -expenseLines : List<ReportExpenseLine>
+    -paymentLines : List<ReportPaymentLine>
+    -totals : ReportTotals
+    -statusMemo : List<StatusMemoLine>
+    -counterparties : List<CounterpartyNetLine>
+  }
+  note top of Report : FR-034, FR-036, FR-037\nDerived; not persisted (AD-18)
+
+  class ReportExpenseLine <<value object>>
+  class ReportPaymentLine <<value object>>
+  class ReportTotals <<value object>> {
+    -totalExpenseAmount : Money
+    -userShareTotal : Money
+    -totalPaidByUser : Money
+    -totalReceivedByUser : Money
+  }
+  class StatusMemoLine <<value object>>
+  class CounterpartyNetLine <<value object>> {
+    -opening : Money
+    -period : Money
+    -later : Money
+    -current : Money
+  }
+
+  class DomainRuleViolation <<exception>>
+
+  enum SplitMethod {
+    EQUAL
+    PERCENTAGE
+  }
+  enum ExpenseStatus {
+    PENDING
+    APPROVED
+    REJECTED
+  }
+  enum DecisionOutcome {
+    APPROVED
+    REJECTED
+  }
+  enum GroupStatus {
+    ACTIVE
+    ARCHIVED
+  }
+  enum NotificationType {
+    NEW_EXPENSE
+    EXPENSE_APPROVED
+    EXPENSE_REJECTED
+  }
+  enum ReceiptMediaType {
+    JPEG
+    PNG
+  }
+}
+
+User "1" *-- "1" Username
+User "1" *-- "1" PasswordHash
+User "1" -- "*" Membership
+Group "1" -- "*" Membership
+Group "1" -- "*" Expense
+Group "1" -- "*" Payment
+Expense "1" *-- "1..*" Share : ordered
+Expense "1" -- "0..1" ReceiptImage
+Expense "1" -- "0..1" ApprovalDecision
+Expense --> User : creator
+Expense --> User : payer
+Share --> User : participant
+Share *-- Money
+Share *-- Percentage
+ApprovalDecision --> User : approver
+Payment --> User : payer
+Payment --> User : recipient
+Notification --> User : recipient
+Notification --> Expense : optional
+
+SplitRequest <|.. EqualSplit
+SplitRequest <|.. PercentageSplit
+PercentageSplit *-- ParticipantPercentage
+SplitAllocator ..> SplitRequest : reads
+SplitAllocator ..> Share : creates
+SplitAllocator ..> Money : uses
+
+Expense ..> LedgerEntry : produces when APPROVED
+Payment ..> LedgerEntry : produces
+BalanceCalculator ..> LedgerEntry : folds
+BalanceCalculator ..> BalanceSheet : creates
+BalanceSheet *-- PairBalance
+PairBalance *-- UserPair
+
+ReportCalculator ..> Report : creates
+ReportCalculator ..> BalanceCalculator : reconciles
+ReportCalculator ..> ReportFilter : applies
+Report *-- ReportFilter
+Report *-- ReportExpenseLine
+Report *-- ReportPaymentLine
+Report *-- ReportTotals
+Report *-- StatusMemoLine
+Report *-- CounterpartyNetLine
+
+Expense --> ExpenseStatus
+Expense --> SplitMethod
+ApprovalDecision --> DecisionOutcome
+Group --> GroupStatus
+Notification --> NotificationType
+ReceiptImage --> ReceiptMediaType
+
+@enduml
