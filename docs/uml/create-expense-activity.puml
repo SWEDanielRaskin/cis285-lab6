@@ -1,0 +1,80 @@
+@startuml create-expense-activity
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: design.md section 4, contracts/service-contracts.md, DEC-26
+title Create Expense\nFR-010 to FR-015, FR-017, FR-020 (conditional draft: OC-1 open)
+
+|Creator|
+start
+:Choose group;
+:Enter amount, date, description;
+:Select payer (default: self);
+:List participants in order;
+:Choose equal or percentage split;
+if (Percentage split?) then (yes)
+  :Enter a percentage per participant;
+else (no)
+endif
+if (Attach a receipt?) then (yes)
+  :Pick JPEG or PNG file;
+else (no)
+endif
+:Submit;
+
+|UI|
+:Send raw values through UiTaskRunner;
+
+|ExpenseService|
+:PREPARE: check session;
+:Parse every field and collect FieldErrors
+(amount, date, description, duplicates,
+non-creator participant, percentages);
+:Read and inspect receipt, if any;
+:BEGIN transaction;
+if (AUTHORIZE: creator is an active member?) then (no)
+  :Roll back;
+  |UI|
+  :Show generic "not found" message;
+  stop
+else (yes)
+endif
+|ExpenseService|
+:VALIDATE: add errors for a payer or
+participant who is not an active member;
+if (Any FieldError?) then (yes)
+  :Roll back;
+  |UI|
+  :Show each error beside its field;
+  :Keep all entered data; focus the first error;
+  |Creator|
+  :Correct and resubmit;
+  stop
+else (no)
+endif
+|ExpenseService|
+:Allocate shares: floor each to the cent,
+then one leftover cent each in listed order;
+note right
+  Worked example: $100.00 equal among 3
+  gives 33.34, 33.33, 33.33.
+end note
+:Create Expense with status PENDING, version 1;
+:Insert expense, ordered shares, and receipt;
+:NotificationDispatcher: notify every other
+active member, in this transaction;
+if (Storage failure?) then (yes)
+  :Roll back; nothing is saved;
+  |UI|
+  :Show generic message; keep the form;
+  stop
+else (no)
+endif
+|ExpenseService|
+:COMMIT;
+|UI|
+:Show shares in listed order;
+note right
+  Balances are unchanged until Approved (FR-020).
+end note
+stop
+
+@enduml

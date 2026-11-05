@@ -1,0 +1,80 @@
+@startuml record-payment-activity
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: design.md section 4, BR-14, BR-15, DEC-27
+title Record Payment\nFR-030 to FR-033 (conditional draft: OC-1 open)
+
+|Payer|
+start
+:Enter group, recipient, amount,
+date, optional note;
+:Submit;
+
+repeat
+  |UI|
+  :Send draft through UiTaskRunner;
+
+  |PaymentService|
+  :PREPARE: check session; parse amount,
+  date, and note; collect FieldErrors;
+  :BEGIN transaction;
+  if (AUTHORIZE: payer is an active member?) then (no)
+    :Roll back;
+    |UI|
+    :Show generic "not found" message;
+    stop
+  else (yes)
+  endif
+  |PaymentService|
+  :VALIDATE: recipient is active and is not the payer;
+  if (Any FieldError?) then (yes)
+    :Roll back;
+    |UI|
+    :Show field errors; keep input;
+    stop
+  else (no)
+  endif
+  |PaymentService|
+  :GUARD: owedNow = what the payer owes
+  the recipient in this group, or 0;
+  if (Amount above owedNow, and acknowledgedOwed
+  absent or different?) then (yes)
+    :Roll back; nothing written;
+    |UI|
+    :Show amount owed and amount entered;
+    note right
+      Cancel is the default choice.
+      The service does the comparison.
+    end note
+    |Payer|
+    if (Confirm?) then (cancel)
+      |UI|
+      :Keep form; no payment recorded;
+      stop
+    else (confirm)
+      |Payer|
+      :Resubmit with acknowledgedOwed = owedNow;
+      note right
+        A changed amount owed gives a fresh warning.
+      end note
+    endif
+  else (no)
+    |PaymentService|
+    :No confirmation needed;
+  endif
+repeat while (Resubmitted?) is (yes) not (no)
+
+|PaymentService|
+:EFFECT: insert immutable Payment,
+overpaymentConfirmed set if the guard fired;
+:COMMIT;
+note right
+  Applies immediately; recipient does not confirm (FR-031).
+  Balance is derived; only this group changes.
+  No notification is created (DEC-17).
+end note
+|UI|
+:Show confirmation; refresh balances;
+:Payment appears in both histories (FR-033);
+stop
+
+@enduml

@@ -1,361 +1,267 @@
 # Data Model: SplitSmart Expense Sharing
 
-**Status**: Draft. AI-generated; not human reviewed (Constitution Principle VII).
-**Date**: 2026-11-04 | **Plan**: [plan.md](plan.md) | **Research**: [research.md](research.md)
-**Diagram**: [docs/uml/domain-class.puml](../../docs/uml/domain-class.puml)
-
-This model describes logical data, not code or database migrations. Entity names come from the
-spec's Key Entities. Storage types are proposals (research R-10, R-11). `NC-n` items are open
-questions from [research.md](research.md#unresolved-questions), and rules affected by them are working
-defaults, not settled decisions.
-
-## Overview
-
-| Entity | Kind | Persisted? | FRs |
-|--------|------|------------|-----|
-| User | Entity | Yes | FR-001 to FR-004 |
-| Group | Entity | Yes | FR-005, FR-008, FR-009 |
-| Membership | Entity | Yes | FR-005 to FR-007 |
-| Expense | Aggregate root | Yes | FR-010, FR-016, FR-020 to FR-024 |
-| Share | Part of Expense | Yes | FR-010 to FR-013, FR-026 |
-| ReceiptImage | Part of Expense | Yes, separately | FR-014 |
-| ApprovalDecision | Entity | Yes, immutable | FR-021 to FR-024 |
-| Payment | Entity | Yes, immutable | FR-030 to FR-033 |
-| Notification | Entity | Yes | FR-017, FR-019, FR-023 |
-| Balance (`BalanceLedger`, `PairBalance`) | Derived | **No** | FR-026 to FR-029 |
-| Report | Derived | **No** in the MVP | FR-034 to FR-037 |
-| Money, Percentage | Value objects | As integers | FR-010 to FR-013, NFR-001 |
-
-## Shared invariants
-
-**Money (Principle IV, NFR-001)**
-
-- **INV-M1**: Every monetary value is a `Money` wrapping `BigDecimal` at scale 2. `float` and `double`
-  are never used.
-- **INV-M2**: Values come from `String` or integers only. Equality uses `compareTo` or normalized
-  scale.
-- **INV-M3**: User-entered amounts with more than 2 decimals are refused, not rounded.
-- **INV-M4**: Rounding has two paths in `Money`: `HALF_EVEN` for general normalization, and `FLOOR` for
-  split allocation only (research R-07).
-- **INV-M5**: `Money` may be negative so it can represent signed net balances. Entered expense and
-  payment amounts must be greater than 0 and at most 1,000,000.00 (the payment maximum is NC-11).
-- **INV-M6**: One currency, displayed in US dollars (spec assumption).
-
-**Dates and times (FR-041, NFR-006)**
-
-- **INV-D1**: Expense and payment dates are calendar dates with no time zone, and may not be later
-  than today by the injected `Clock`.
-- **INV-D2**: Audit timestamps are UTC instants from the injected `Clock`.
-- **INV-D3**: Dates are displayed and entered as `yyyy-MM-dd` (proposed, PD-17).
-
-**Identity and audit (NFR-006)**
-
-- **INV-I1**: Each entity has a UUID in a typed wrapper (`UserId`, `GroupId`, `ExpenseId`, and so on),
-  created by the application.
-- **INV-A1**: `ApprovalDecision` and `Payment` records are insert-only. No operation changes or deletes
-  them.
-- **INV-A2**: Every `ApprovalDecision` and `Payment` records who acted and when.
-
-**Balance effect (FR-020, SC-005)**
-
-- **INV-B1**: Only `APPROVED` expenses and recorded payments feed `BalanceLedger`. `PENDING` and
-  `REJECTED` expenses cannot contribute.
-
-## User
-
-| Field | Type | Rules |
-|-------|------|-------|
-| id | UserId | Immutable |
-| username | Text | 3 to 30 characters; preserved as typed |
-| usernameKey | Text | Lowercase form of username; **unique**, giving case-insensitive uniqueness (FR-001) |
-| displayName | Text | Required. The spec sets no length limit |
-| passwordHash | Text | Non-reversible, with its salt and iteration count (FR-004, NFR-002). Never displayed or logged |
-| failedLoginCount | Integer | 0 or more; reset to 0 by a successful login |
-| lockedUntil | Instant, optional | Set on the 5th consecutive failure to now + 5 minutes |
-| createdAt | Instant | Immutable |
-
-- **Validation**: Password of at least 8 characters (FR-001). The plaintext is checked and hashed, and
-  never stored.
-- **Lockout states**:
-
-```text
-Unlocked (count < 5) --wrong password--> count + 1
-Unlocked (count = 4) --wrong password--> Locked (lockedUntil = now + 5 min)
-Unlocked             --correct password--> count = 0
-Locked               --any attempt before lockedUntil--> refused; state unchanged (assumption, R-16)
-Locked               --lockedUntil reached--> Unlocked (count = 0)
-```
-
-- **Relationships**: One user has many Memberships.
-
-## Group
-
-| Field | Type | Rules |
-|-------|------|-------|
-| id | GroupId | Immutable |
-| name | Text | 1 to 50 characters; need not be unique (the spec does not require it) |
-| adminId | UserId | Exactly one admin in the MVP; initially the creator (FR-005) |
-| status | ACTIVE or ARCHIVED | Always ACTIVE in the MVP. ARCHIVED is reserved for Post-MVP FR-009, and no MVP operation sets it |
-| createdAt | Instant | Immutable |
-
-- **Relationships**: One group has many Memberships, Expenses, and Payments.
-- **Open**: Whether the admin can leave is NC-5.
-
-## Membership
-
-| Field | Type | Rules |
-|-------|------|-------|
-| groupId | GroupId | Required |
-| userId | UserId | Required |
-| joinedAt | Instant | Required |
-| leftAt | Instant, optional | Empty means current member |
-
-- **Constraints**: At most one current membership per group and user. Rejoining adds a new row, so
-  history is kept (spec Q6 default).
-- **Lifecycle**: `Current --removed or left, FR-007 check passes--> Former --rejoined--> new Current row`.
-- **Validation**: FR-007 refuses removal or leaving when the member's net balance in that group is not
-  $0.00. NC-6 asks whether this should be pairwise, and NC-4 asks about Pending expenses.
-- **Visibility**: A current member sees the group's data. A former member sees only items they were
-  personally part of (NC-3 working default).
-
-## Expense
-
-| Field | Type | Rules |
-|-------|------|-------|
-| id | ExpenseId | Immutable |
-| groupId | GroupId | Immutable |
-| creatorId | UserId | Immutable; a current member when created |
-| payerId | UserId | Exactly one; any current member; defaults to the creator; need not be a participant (FR-010) |
-| amount | Money | Greater than 0, at most 1,000,000.00, at most 2 decimals |
-| date | Calendar date | Not later than today |
-| description | Text | 1 to 200 characters |
-| splitMethod | EQUAL or PERCENTAGE | Required |
-| status | PENDING, APPROVED, or REJECTED | Starts PENDING (FR-020) |
-| shares | Ordered list of Share | See below; order is saved (FR-012) |
-| version | Integer | Starts at 1; increases on each edit; used to detect stale decisions |
-| createdAt | Instant | Immutable |
-
-**Validation (all failures reported together, FR-015):**
-
-- At least one participant, all current group members, with no duplicates.
-- At least one participant other than the creator, or no one could approve it (Edge Cases, FR-021,
-  FR-022). This means the payer can be the only participant only when the payer is not the creator.
-- Percentage rules apply only when `splitMethod` is PERCENTAGE.
-
-**Lifecycle (FR-016, FR-020 to FR-024):**
-
-```text
-(new) --create--> PENDING
-PENDING --creator edits--> PENDING (version + 1; shares recalculated)
-PENDING --creator deletes--> removed
-PENDING --eligible approver approves--> APPROVED  (final; now affects balances)
-PENDING --eligible approver rejects, with reason--> REJECTED  (final; never affects balances)
-```
-
-- APPROVED and REJECTED allow no edit, delete, or further status change. Correcting a rejected expense
-  means creating a new one (spec Q5 default).
-- **Eligible approver**: a participant other than the creator (FR-021, FR-022), who is a current
-  member, because the spec defines "group member" as current unless stated otherwise. NC-4 covers
-  people who leave while an expense is Pending. One decision settles the expense.
-- **Delete**: Removes the expense, its shares, and its receipt. Existing notifications keep their text,
-  and their expense link is cleared (NC-9 working default).
-
-## Share
-
-| Field | Type | Rules |
-|-------|------|-------|
-| expenseId | ExpenseId | Part of its expense |
-| position | Integer | 0-based participant order (FR-012); unique per expense |
-| participantId | UserId | Unique per expense |
-| percentage | Percentage, optional | Present only for PERCENTAGE: 0.00 to 100.00, at most 2 decimals |
-| amount | Money | Calculated by `SplitAllocator`; 0.00 or more; never entered |
-
-**Invariants:**
-
-- **INV-S1**: The sum of share amounts equals the expense amount exactly (FR-012, SC-004).
-- **INV-S2**: For PERCENTAGE, percentages total exactly 100.00 (FR-013).
-- **INV-S3**: Allocation is reproducible from the amount, method, percentages, and saved order.
-
-**Allocation** is defined in [research.md R-08](research.md#r-08-split-allocation-algorithm). A $0.00
-share is valid: $0.01 split among three gives 0.01, 0.00, 0.00. NC-7 asks whether a 0% participant may
-receive a leftover cent.
-
-## ReceiptImage
-
-| Field | Type | Rules |
-|-------|------|-------|
-| expenseId | ExpenseId | At most one receipt per expense (FR-014) |
-| mediaType | JPEG or PNG | Checked from the file's leading bytes |
-| bytes | Binary | At most 5 MB |
-| originalFileName | Text | Display only |
-
-- **Rules**: Attaching or replacing is allowed only while the expense is PENDING, because FR-016
-  disallows edits afterward. Any current group member may view it (FR-014). An invalid file is refused
-  without losing the other entered data (Edge Cases).
-- **Persistence**: Stored in its own table so that lists and reports do not load image bytes.
-
-## ApprovalDecision
-
-| Field | Type | Rules |
-|-------|------|-------|
-| id | DecisionId | Immutable |
-| expenseId | ExpenseId | **Unique**: one decision per expense in the MVP |
-| approverId | UserId | Eligible approver at decision time |
-| decision | APPROVE or REJECT | Required |
-| reason | Text, optional | Required for REJECT, 1 to 200 characters (FR-023). Optional for APPROVE (FR-024: "if any") |
-| decidedAt | Instant | From `Clock` |
-
-- **Immutable**: Insert-only (INV-A1, FR-024, NFR-006). Visible to group members.
-- **Atomicity**: The status update, decision insert, and creator notification commit together (PD-08).
-- **Post-MVP**: Multi-level approval (FR-025) would require relaxing the unique rule and adding approval
-  configuration per group. Not designed in the MVP.
-
-## Payment
-
-| Field | Type | Rules |
-|-------|------|-------|
-| id | PaymentId | Immutable |
-| groupId | GroupId | **Required** (FR-030). Both users must be current members |
-| payerId | UserId | The acting user: users record payments they made |
-| recipientId | UserId | Different from the payer |
-| amount | Money | Greater than 0, at most 2 decimals; maximum per NC-11 |
-| date | Calendar date | Not later than today |
-| note | Text, optional | Up to 200 characters |
-| recordedAt | Instant | From `Clock`; audit (NFR-006) |
-
-- **Lifecycle**: None. A payment takes effect as soon as it is saved, with no recipient confirmation
-  (FR-031), and cannot be changed or deleted (NFR-006). A mistake is corrected by an opposite payment
-  (research RK-5).
-- **Overpayment** (FR-032): If the amount exceeds what the payer currently owes the recipient in that
-  group, saving requires explicit confirmation, checked again inside the transaction.
-
-## Notification
-
-| Field | Type | Rules |
-|-------|------|-------|
-| id | NotificationId | Immutable |
-| recipientId | UserId | Required |
-| type | EXPENSE_CREATED, EXPENSE_APPROVED, or EXPENSE_REJECTED | Required |
-| expenseId | ExpenseId, optional | Cleared if the expense is deleted |
-| groupId | GroupId | Required |
-| message | Text | Saved text. EXPENSE_CREATED states the creator, group, description, amount, and date (FR-017). Decision types include the reason, if any (FR-023) |
-| createdAt | Instant | Sort newest first (FR-019) |
-| readAt | Instant, optional | Empty means unread |
-
-- **Recipients of EXPENSE_CREATED**: Every current group member except the creator (FR-017).
-- **Recipient of a decision type**: The expense creator (FR-023).
-- **Computed, not stored**: `needsApproval` is true when `expenseId` is present, that expense is
-  PENDING, the recipient is a participant, and the recipient is not the creator (FR-017, research R-19).
-- **Lifecycle**: `Unread --mark read--> Read`.
-
-## Balance (derived)
-
-Never stored. `BalanceLedger` computes it from Approved shares and payments (research R-13).
-
-For viewer **V**, other user **O**, and group **G**, a positive result means "O owes V":
-
-```text
-net(V, O, G) =   sum of O's share in APPROVED expenses in G paid by V
-               - sum of V's share in APPROVED expenses in G paid by O
-               + sum of payments in G from V to O
-               - sum of payments in G from O to V
-```
-
-| Derived item | Definition | FR |
-|--------------|------------|----|
-| Payer's own share | Creates no entry, because a user never owes themselves | FR-026 |
-| Overall pair balance | Sum of net(V, O, G) across their groups | FR-027, FR-028 |
-| Member net in group | Sum of net(V, O, G) over all O in G | FR-007 |
-| Amount payer owes recipient in G | net(recipient, payer, G) when positive, otherwise 0 | FR-032 |
-
-**Invariants:**
-
-- **INV-B2**: net(V, O, G) = −net(O, V, G).
-- **INV-B3**: Member nets within each group sum to $0.00, so all amounts owed equal all amounts due
-  (FR-029).
-- **INV-B4**: Overall pair balance equals the sum of its per-group balances (FR-027).
-
-**Checks against spec scenarios**
-
-- $90.00 paid by alex, equal among alex, sam, and jo: net(alex, sam) = +30.00 and net(alex, jo) = +30.00.
-- Plus $60.00 paid by sam, equal between alex and sam: net(alex, sam) = 30.00 − 30.00 = 0.00.
-- sam owes alex $30.00, and sam pays $40.00 after confirming: net(alex, sam) = 30.00 − 40.00 = −10.00,
-  so alex owes sam $10.00.
-
-## Report (derived)
-
-Generated on demand; not stored in the MVP. Saved definitions and export are Post-MVP (FR-038).
-
-**ReportCriteria (FR-035; any combination):** optional inclusive start and end date, optional group,
-optional other user, optional expense statuses. An end date before the start date is refused.
-
-**Scope:** Items involving the acting user. Former-member visibility follows NC-3.
-
-| Output | Definition | FR |
-|--------|------------|----|
-| Expense lines | Matching expenses where the user is creator, payer, or participant, showing status | FR-036 |
-| Payment lines | Matching payments where the user is payer or recipient | FR-036 |
-| totalExpenseAmount | Sum of amounts on matching **APPROVED** lines | FR-036 |
-| userShareTotal | Sum of the user's shares on matching **APPROVED** lines | FR-036 |
-| totalPaid, totalReceived | Sums of matching payment lines (NC-10) | FR-036 |
-| filteredNetByUser | `BalanceLedger` result using only matching APPROVED expenses and payments | FR-036, FR-037 |
-| currentNetByUser | Current balance, honoring group and other-user filters but not dates or statuses | Story 8 scenario 2 |
-
-**Rules (working defaults under NC-8):**
-
-- Pending and Rejected expenses can appear as lines but never enter a money total (SC-005).
-- The status filter applies to expense lines only, because payments have no status.
-- When no date or status filter is used, `filteredNetByUser` must equal `currentNetByUser` to the cent
-  (FR-037, SC-007).
-- No matches produce an empty report with zero totals, not an error (Story 8 scenario 4).
-
-## Relationships
-
-```text
-User 1---* Membership *---1 Group
-Group 1---* Expense 1---1..* Share *---1 User (participant)
-Expense *---1 User (creator), *---1 User (payer)
-Expense 1---0..1 ReceiptImage
-Expense 1---0..1 ApprovalDecision *---1 User (approver)
-Group 1---* Payment *---1 User (payer), *---1 User (recipient)
-User 1---* Notification *---0..1 Expense
-```
-
-## Persistence versus derived data
-
-| Persisted | Derived on read |
-|-----------|-----------------|
-| User, Group, Membership, Expense, Share, ReceiptImage, ApprovalDecision, Payment, Notification | Balances, member nets, overpayment amount, `needsApproval`, unread count, reports |
-
-**Proposed storage mapping (PD-06, PD-07), not a migration:**
-
-- Money is stored as integer cents, and percentages as integer hundredths of a percent.
-- Dates are `yyyy-MM-dd` text; instants are UTC ISO-8601 text; IDs are UUID text.
-- Foreign keys are enforced, and SQLite requires this to be turned on per connection.
-- Unique rules: `usernameKey`; one decision per expense; one share position and participant per
-  expense; one current membership per group and user.
-- Indexes (for NFR-004): expenses by group and status; expenses by date; shares by participant; payments
-  by group; payments by payer and recipient; memberships by user; notifications by recipient.
-
-## FR traceability
-
-| FRs | Model elements |
-|-----|----------------|
-| FR-001, FR-002, FR-004 | User (usernameKey, passwordHash, lockout fields) |
-| FR-003 | Membership visibility rule; Report scope |
-| FR-005 to FR-008 | Group, Membership, member net |
-| FR-009 (Post-MVP) | Group.status reserved only |
-| FR-010 to FR-013 | Expense, Share, Money, Percentage, allocation |
-| FR-014 | ReceiptImage |
-| FR-015 | Expense validation with all failures reported |
-| FR-016 | Expense lifecycle and version |
-| FR-017, FR-019 | Notification, computed needsApproval |
-| FR-018 (Post-MVP) | Not modeled |
-| FR-020 to FR-024 | Expense status, ApprovalDecision |
-| FR-025 (Post-MVP) | Not modeled; the required change is noted above |
-| FR-026 to FR-029 | Balance formula and invariants |
-| FR-030 to FR-033 | Payment |
-| FR-034 to FR-037 | Report, ReportCriteria |
-| FR-038, FR-039 (Post-MVP) | Not modeled |
-| FR-040 | All persisted entities |
-| FR-041 | INV-D3, INV-M6 |
+**Status**: Draft — Reconciliation Incomplete. **Date**: 2026-11-05
+**Diagram**: [domain-class.puml](../../docs/uml/domain-class.puml) | **Requirements**: [spec.md](spec.md) | **Decisions**: [decision-log.md](decisions/decision-log.md)
+
+§1 to §4 are the conceptual domain model. §5 is the persistence model, a design under [DEC-05](decisions/decision-log.md#dec-05-storage-engine). **No schema has been created or run.**
+
+## 1. Overview
+
+| Concept | Kind | Persisted? | Requirements |
+|---|---|---|---|
+| `User` | Entity | Yes | FR-001, FR-002, FR-004, NFR-002 |
+| `Group` | Entity | Yes | FR-005, FR-006, FR-008, FR-009 (status reserved) |
+| `Membership` | Entity | Yes | FR-005 to FR-007, FR-017, FR-030 |
+| `Expense` | Aggregate root | Yes | FR-010, FR-016, FR-020 to FR-024 |
+| `Share` | Value object in `Expense` | Yes | FR-010 to FR-013, FR-026 |
+| `Receipt` | Value object, stored separately | Yes | FR-014 |
+| `ApprovalDecision` | Entity, immutable | Yes | FR-021 to FR-024, NFR-006 |
+| `Payment` | Entity, immutable | Yes | FR-030 to FR-033, NFR-006 |
+| `Notification` | Entity | Yes | FR-017, FR-019, FR-023 |
+| `Money`, `Percentage`, `Username`, `PasswordHash`, typed IDs | Value objects | As column values | NFR-001, FR-001, FR-004, NFR-009 |
+| `LedgerEntry`, `PairBalance`, `BalanceSheet` | Derived | **No** | FR-026 to FR-029 |
+| `Report` and its lines | Derived | **No** | FR-034 to FR-037 |
+
+## 2. Shared invariants
+
+| ID | Invariant | Source |
+|---|---|---|
+| INV-M1 | Every monetary value is a `Money` wrapping `BigDecimal` at scale 2. `float` and `double` never hold money, including in tests and `ui` | Principle IV |
+| INV-M2 | `BigDecimal` for money is built from `String` or integers only. Equality uses `compareTo` | Principle IV |
+| INV-M3 | Entered amounts are 0.01–1,000,000.00 with at most 2 decimals. Excess decimals are refused, never rounded | BR-27 |
+| INV-M4 | Rounding modes appear only inside `Money`: `FLOOR` for allocation and `HALF_EVEN` for other normalization | DEC-06 |
+| INV-M5 | `Money` may be negative internally for signed nets. The UI shows direction in words | DEC-24 |
+| INV-D1 | Expense and payment dates are `LocalDate`, today or earlier by the injected `Clock` in the system zone | BR-30 |
+| INV-D2 | Event times are UTC `Instant`s from the injected `Clock` | NFR-006 |
+| INV-I1 | Identifiers are UUIDs in typed wrappers, created by the application | NFR-009 |
+| INV-A1 | `ApprovalDecision` and `Payment` are insert-only and record actor and time | NFR-006 |
+| INV-B1 | Only `APPROVED` expenses and recorded payments produce ledger entries | BR-08 |
+| INV-EXIT-1 | A former member's pair balances in that group stay $0.00 until they rejoin | DEC-08 |
+| INV-EXIT-2 | Everyone referenced by a Pending expense is an active member | DEC-09 |
+
+## 3. Entities
+
+### User
+
+| Attribute | Type | Null? | Rule | Requirement |
+|---|---|---|---|---|
+| `id` | `UserId` | No | Immutable | NFR-009 |
+| `username` | `Username` | No | 3–30 characters after trim; stored as typed | FR-001 |
+| `usernameKey` | derived from `username` | No | Lowercase in `Locale.ROOT`; **unique** | FR-001 |
+| `displayName` | String | No | 1–50 characters after trim (team-added) | FR-001, DEC-24 |
+| `passwordHash` | `PasswordHash` | No | Algorithm, iterations, salt, hash. `toString` exposes nothing | FR-004 |
+| `failedLoginCount` | int | No | 0–5 | NFR-002 |
+| `lockedUntil` | `Instant` | Yes | Set at the 5th failure | NFR-002 |
+| `createdAt` | `Instant` | No | Immutable | Support |
+
+Behavior: `isLockedAt(now)` is true while `now < lockedUntil`. `recordFailedLogin(now)` restarts from 0 if an earlier lock has expired, then increments, and locks at 5. `recordSuccessfulLogin()` clears both fields. See [authentication-state.puml](../../docs/uml/authentication-state.puml). There is no account deletion in the MVP, so user references stay valid.
+
+### Group
+
+| Attribute | Type | Null? | Rule | Requirement |
+|---|---|---|---|---|
+| `id` | `GroupId` | No | Immutable | NFR-009 |
+| `name` | String | No | 1–50 characters; need not be unique | FR-005, FR-008 |
+| `adminId` | `UserId` | No | The one admin. An active member whenever the group has an active member | FR-005, FR-006, DEC-10 |
+| `status` | `GroupStatus` | No | Always `ACTIVE` in the MVP. `ARCHIVED` is reserved for FR-009 and never written | FR-009 |
+| `createdAt` | `Instant` | No | Immutable | Support |
+
+Behavior: `rename(name)`, `assignAdmin(userId)`. A group with no active members has no status of its own; this is derived from memberships (DEC-10).
+
+### Membership
+
+| Attribute | Type | Null? | Rule | Requirement |
+|---|---|---|---|---|
+| `id` | `MembershipId` | No | Immutable | NFR-009 |
+| `groupId`, `userId` | IDs | No | **At most one active row per pair** | FR-005, FR-006 |
+| `joinedAt` | `Instant` | No | Orders admin succession | FR-006, DEC-10 |
+| `addedBy` | `UserId` | No | The user themself for the founder | FR-006 |
+| `leftAt` | `Instant` | Yes | Null means active; not before `joinedAt` | FR-006 |
+| `endedBy` | `UserId` | Yes | Equal to `userId` means left; otherwise removed by that admin | FR-006 |
+
+Rows are never deleted. Rejoining adds a row (DEC-11). See [membership-state.puml](../../docs/uml/membership-state.puml).
+
+### Expense
+
+| Attribute | Type | Null? | Rule | Requirement |
+|---|---|---|---|---|
+| `id` | `ExpenseId` | No | Immutable | NFR-009 |
+| `groupId` | `GroupId` | No | Immutable | FR-010, BR-11 |
+| `creatorId` | `UserId` | No | Immutable; an active member at creation | FR-010 |
+| `payerId` | `UserId` | No | Active member at save; defaults to creator | BR-01 |
+| `amount` | `Money` | No | INV-M3 | FR-010 |
+| `date` | `LocalDate` | No | INV-D1 | FR-010 |
+| `description` | String | No | 1–200 characters | FR-010 |
+| `splitMethod` | `SplitMethod` | No | `EQUAL` or `PERCENTAGE` | FR-010 |
+| `status` | `ExpenseStatus` | No | Starts `PENDING` | FR-020 |
+| `shares` | ordered `List<Share>` | No | At least 1 | FR-012 |
+| `version` | int | No | Starts at 1; +1 per edit | FR-016, DEC-04 |
+| `createdAt`, `updatedAt` | `Instant` | No | Shown on detail; support audit | Support |
+
+Invariants: E1 shares total exactly `amount` (FR-012). E2 at least one participant is not the creator (BR-03). E3 participants are distinct (BR-02). E4 percentage splits total exactly 100.00 (BR-05). E5 status changes once, from Pending only (BR-10).
+
+Behavior: `create(...)`, `revise(actor, ...)`, `isEligibleApprover(userId)`, `approve(approver, reason, now)`, `reject(approver, reason, now)`, `isInvolved(userId)`, `ledgerEntries()` (empty unless Approved). See [expense-state.puml](../../docs/uml/expense-state.puml).
+
+### Share
+
+| Attribute | Type | Null? | Rule | Requirement |
+|---|---|---|---|---|
+| `position` | int | No | 0-based listed order; unique per expense | FR-012 |
+| `participantId` | `UserId` | No | Unique per expense | BR-02 |
+| `percentage` | `Percentage` | Yes | Required for `PERCENTAGE`, absent for `EQUAL` | FR-013 |
+| `amount` | `Money` | No | At least 0.00; computed by `SplitAllocator`; never entered | FR-011 to FR-013 |
+
+Share amounts are persisted as the snapshot of a deterministic calculation. Recomputing from amount, method, percentages, and order must give the same values (RP-08).
+
+### Receipt
+
+| Attribute | Type | Null? | Rule | Requirement |
+|---|---|---|---|---|
+| `mediaType` | `ReceiptMediaType` | No | `JPEG` or `PNG`, by file content | FR-014 |
+| `sizeBytes` | long | No | 1 to 5,242,880 | FR-014, DEC-25 |
+| `content` | bytes | No | Loaded only for viewing | FR-014 |
+| `uploadedAt` | `Instant` | No | Support | Support |
+
+At most one per expense. The uploader is always the creator, so no separate field exists.
+
+### ApprovalDecision (immutable)
+
+| Attribute | Type | Null? | Rule | Requirement |
+|---|---|---|---|---|
+| `id` | `DecisionId` | No | | NFR-009 |
+| `expenseId` | `ExpenseId` | No | **Unique** in the MVP | FR-021, FR-024 |
+| `approverId` | `UserId` | No | Eligible approver at decision time | FR-021 |
+| `outcome` | `DecisionOutcome` | No | `APPROVED` or `REJECTED` | FR-024 |
+| `reason` | String | Yes | Required for `REJECTED`, 1–200 characters; optional for `APPROVED`, up to 200 | FR-023, FR-024 |
+| `decidedAt` | `Instant` | No | From `Clock` | NFR-006 |
+
+### Payment (immutable)
+
+| Attribute | Type | Null? | Rule | Requirement |
+|---|---|---|---|---|
+| `id` | `PaymentId` | No | | NFR-009 |
+| `groupId` | `GroupId` | No | Both parties are active members when recording | FR-030 |
+| `payerId` | `UserId` | No | Always the recording user | BR-14 |
+| `recipientId` | `UserId` | No | Differs from payer | BR-14 |
+| `amount` | `Money` | No | INV-M3 | FR-030, DEC-20 |
+| `date` | `LocalDate` | No | INV-D1 | FR-030 |
+| `note` | String | Yes | Up to 200 characters | FR-030 |
+| `recordedAt` | `Instant` | No | Audit actor is `payerId` | NFR-006 |
+| `overpaymentConfirmed` | boolean | No | True when the FR-032 warning was confirmed | FR-032 |
+
+**A payment has no lifecycle states.** It takes effect when saved (FR-031), so no state diagram applies.
+
+### Notification
+
+| Attribute | Type | Null? | Rule | Requirement |
+|---|---|---|---|---|
+| `id` | `NotificationId` | No | | NFR-009 |
+| `recipientId` | `UserId` | No | | FR-017, FR-023 |
+| `type` | `NotificationType` | No | `EXPENSE_CREATED`, `EXPENSE_APPROVED`, `EXPENSE_REJECTED` | FR-017, FR-023 |
+| `groupId` | `GroupId` | No | Visibility scope | FR-003 |
+| `expenseId` | `ExpenseId` | Yes | Cleared when a Pending expense is deleted | DEC-16 |
+| `message` | String | No | Saved text as created. Created type states creator, group, description, amount, date. Decision types include the reason, if any | FR-017, FR-023 |
+| `createdAt` | `Instant` | No | Newest first | FR-019 |
+| `readAt` | `Instant` | Yes | Null means unread. Can reset to null only under DEC-16 | FR-019 |
+
+At most one row per recipient, expense, and type while `expenseId` is present. **"Needs your approval" is not stored.** It is true when the type is `EXPENSE_CREATED`, the linked expense is `PENDING`, and the recipient is a participant other than the creator.
+
+## 4. Derived models
+
+| Value | Definition | Requirement |
+|---|---|---|
+| `LedgerEntry(groupId, debtorId, creditorId, amount, date)` | **Approved expense:** one per share where participant ≠ payer and amount > 0; debtor = participant, creditor = payer, date = expense date. **Payment:** debtor = recipient, creditor = payer, date = payment date | FR-026, FR-027, FR-031 |
+| `PairBalance(groupId, UserPair(lowId, highId), net)` | Sum of entries where low owes high, minus those where high owes low. Positive means low owes high | FR-027 |
+| `BalanceSheet.owedBy(debtor, creditor, group)` | That pair's net in the debtor's direction, or 0 if negative | FR-032 |
+| `BalanceSheet.overall(a, b)` | Sum of per-group nets for the pair | FR-027 |
+| `BalanceSheet.nonZeroPairsFor(user, group)` | Pairs that block exit | FR-007 |
+| `BalanceSheet.memberNet(user, group)` | Signed total, for display | FR-028 |
+| Unread count, "needs your approval," visibility scope | Computed on read | FR-017, FR-019, NFR-003 |
+
+A payment entry names the recipient as debtor because a payment reduces what the payer owes and an excess reverses the direction. Example: sam owes alex $30.00 and pays $40.00. Entries are sam→alex 30.00 and alex→sam 40.00, so alex owes sam $10.00.
+
+**Balance invariants:** B1 Pending and Rejected produce no entries. B2 A payer's own share produces no entry. B3 Each pair has one signed net per group, so total owed equals total due (FR-029). B4 Overall equals the sum of per-group nets. B5 Recomputing from the same records gives the same result.
+
+**How derived balances reconcile.** No balance is ever persisted, so no consistency strategy is needed. `LedgerQueryRepository` selects the same set `Expense.ledgerEntries()` and `Payment.ledgerEntry()` produce, and RP-06 asserts the two agree.
+
+### Report
+
+| Type | Fields |
+|---|---|
+| `ReportFilter` | `from?`, `to?` (inclusive), `groupId?`, `otherUserId?`, `statuses?` |
+| `ReportExpenseLine` | expenseId, group, date, description, payer, status, amount, user's share |
+| `ReportPaymentLine` | paymentId, group, date, payer, recipient, amount, note |
+| `ReportTotals` | `totalExpenseAmount`, `userShareTotal`, `totalPaidByUser`, `totalReceivedByUser` |
+| `StatusMemoLine` | status, count, amount; labeled "Not included in totals" |
+| `CounterpartyNetLine` | otherUser, `opening`, `period`, `later`, `current` |
+| `Report` | filter, generatedAt, expense lines, payment lines, totals, memo, counterparty lines |
+
+Rules: BR-19, BR-20, BR-21. Invariants: R1 `opening + period + later = current` on every line. R2 `current` equals `BalanceService` for the same group scope. R3 Pending and Rejected amounts never appear in `ReportTotals` or `CounterpartyNetLine`.
+
+Counterparty lines use only ledger entries in which the viewer is a party, so they cannot leak another member's activity to a former member.
+
+## 5. Persistence model (SQLite, proposed)
+
+**Conventions:** all tables `STRICT`. IDs `TEXT` (UUID). Instants `TEXT` (UTC ISO-8601). Dates `TEXT` (`yyyy-MM-dd`). Money `INTEGER` cents. Percentages `INTEGER` hundredths. Booleans `INTEGER` 0 or 1. Foreign keys are `RESTRICT` unless stated.
+
+| Table | Key | Columns | Foreign keys | Constraints |
+|---|---|---|---|---|
+| `app_user` | `id` | `username`, `username_key`, `display_name`, `password_hash` (BLOB), `password_salt` (BLOB), `password_algorithm`, `password_iterations`, `failed_login_count`, `locked_until`?, `created_at` | | **UNIQUE** `username_key`; CHECK count 0–5 |
+| `expense_group` | `id` | `name`, `admin_user_id`, `status`, `created_at` | `admin_user_id` → `app_user` | CHECK status in (`ACTIVE`, `ARCHIVED`) |
+| `membership` | `id` | `group_id`, `user_id`, `joined_at`, `added_by`, `left_at`?, `ended_by`? | → `expense_group`, → `app_user` | **UNIQUE INDEX** `(group_id, user_id) WHERE left_at IS NULL`; CHECK `left_at >= joined_at` |
+| `expense` | `id` | `group_id`, `creator_id`, `payer_id`, `amount_cents`, `expense_date`, `description`, `split_method`, `status`, `version`, `created_at`, `updated_at` | → `expense_group`, → `app_user` | CHECK `amount_cents BETWEEN 1 AND 100000000`; CHECK enums |
+| `expense_share` | `(expense_id, position)` | `participant_id`, `percent_hundredths`?, `amount_cents` | `expense_id` → `expense` **CASCADE**; → `app_user` | **UNIQUE** `(expense_id, participant_id)`; CHECK `amount_cents >= 0`; CHECK percent 0–10000 |
+| `expense_receipt` | `expense_id` | `media_type`, `size_bytes`, `content` (BLOB), `uploaded_at` | `expense_id` → `expense` **CASCADE** | CHECK `size_bytes BETWEEN 1 AND 5242880` |
+| `approval_decision` | `id` | `expense_id`, `approver_id`, `outcome`, `reason`?, `decided_at` | → `expense`, → `app_user` | **UNIQUE** `expense_id`; CHECK `outcome <> 'REJECTED' OR reason IS NOT NULL` |
+| `payment` | `id` | `group_id`, `payer_id`, `recipient_id`, `amount_cents`, `payment_date`, `note`?, `recorded_at`, `overpayment_confirmed` | → `expense_group`, → `app_user` | CHECK `amount_cents BETWEEN 1 AND 100000000`; CHECK `payer_id <> recipient_id` |
+| `notification` | `id` | `recipient_id`, `type`, `group_id`, `expense_id`?, `message`, `created_at`, `read_at`? | `expense_id` → `expense` **SET NULL**; others restrict | **UNIQUE INDEX** `(recipient_id, expense_id, type) WHERE expense_id IS NOT NULL` |
+
+`?` marks a nullable column.
+
+**Triggers (defense in depth, NFR-006, FR-016):** Refuse `UPDATE` and `DELETE` on `approval_decision` and `payment`. Refuse `UPDATE` and `DELETE` on `expense` when `OLD.status <> 'PENDING'`.
+
+**Rules checked in Java, not SQL:** shares total the amount; percentages total 100.00; at least one non-creator participant; dates not in the future (a database clock would disagree with the injected `Clock`); membership-dependent rules.
+
+**Deletion and retention:** Only a Pending expense can be deleted. Shares and receipt cascade, and notification links become null. Users, groups, memberships, decisions, and payments are never deleted in the MVP. Nothing expires. Former members keep history.
+
+**Ordering guarantees:** Shares by `position`. Notifications by `created_at` descending, then `id`. Payment history and report lines by date descending, then `id`. Members by `joined_at`, then `user_id`, which is also the succession order.
+
+**Indexes for NFR-004 (effect unmeasured):**
+
+| Index | Serves |
+|---|---|
+| `membership (user_id, left_at)` | "My groups," access checks |
+| `membership (group_id, left_at)` | Member lists, notification audience, succession |
+| `expense (group_id, status, expense_date)` | Ledger queries, group lists, report filters |
+| `expense (creator_id)`, `expense (payer_id)` | Reports, exit guard |
+| `expense_share (participant_id, expense_id)` | Pending approvals, reports, exit guard |
+| `payment (group_id, payment_date)` | Ledger queries, report filters |
+| `payment (payer_id)`, `payment (recipient_id)` | Payment history |
+| `notification (recipient_id, read_at, created_at)` | Unread count, newest-first list |
+
+**Migration and versioning:** `PRAGMA user_version` holds the schema version. At startup `repository.sqlite` applies ordered migration scripts inside one transaction, starting from version 0 for a new file, which gives schema version 1. A file with a newer version than the application understands is refused with a message. Users back up by copying the data folder while the application is closed; no automatic backup exists.
+
+## 6. Domain-to-table mapping
+
+| Domain concept | Table | Note |
+|---|---|---|
+| `User`, `Username`, `PasswordHash` | `app_user` | Flattened value objects |
+| `Group` | `expense_group` | `group` is an SQL keyword |
+| `Membership` | `membership` | |
+| `Expense` | `expense`, `expense_share` | One aggregate; saved together |
+| `Share` | `expense_share` | |
+| `Receipt` | `expense_receipt` | Separate so that lists never load bytes |
+| `ApprovalDecision` | `approval_decision` | |
+| `Payment` | `payment` | |
+| `Notification` | `notification` | |
+| `Money` | `*_cents` | `Money.ofCents` and `toCents` at the boundary |
+| `Percentage` | `percent_hundredths` | |
+| `LedgerEntry`, `Report` | none | Query projections and calculated values |
+
+Row mappers rebuild entities through a `rehydrate` factory. It rechecks structural invariants but not creation-time rules such as "date not in the future" or "payer is active," which can legitimately differ on later reads.
+
+## 7. Data dictionary notes
+
+Every persisted field above carries its requirement in the entity tables. Fields marked "Support" (`createdAt`, `updatedAt`, `uploadedAt`) have no direct FR. They are retained for ordering and diagnosis, and a reviewer may drop them. Fields proposed by the AI sets and **not** retained: `Group.updatedAt`, `Receipt.sha256`, `Receipt.originalFileName`, `Receipt.uploadedBy`, `Notification.decisionId`, and structured notification snapshot columns.
+
+FR-009, FR-018, FR-025, FR-038, and FR-039 are not modeled, beyond the reserved `ARCHIVED` value.

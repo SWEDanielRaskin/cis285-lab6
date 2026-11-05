@@ -1,57 +1,82 @@
 @startuml payment-settlement-sequence
-' Status: Draft. AI-generated; not human reviewed (Constitution Principle VII).
-' Syntax not yet checked: PlantUML is not available on the authoring machine.
-' Written design: specs/001-splitsmart-expense-sharing/contracts/service-contracts.md
-title Payment Settlement (FR-030 to FR-033, FR-027; Draft)
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: contracts/service-contracts.md, DEC-26, DEC-27
+title Payment Settlement\nFR-030 to FR-033, FR-027 (conditional draft: OC-1 open)
 
-actor "Payer" as Payer
-participant "PaymentDialog\nPaymentController" as PaymentUi
-participant PaymentService
-participant AccessPolicy
-participant BalanceService
-participant BalanceLedger
-participant TransactionManager
-database Repositories
+actor "Payer\n(signed-in user)" as Payer
+participant "PaymentFormPanel\nOverpaymentConfirmDialog" as Panel
+participant "PaymentController\n(via UiTaskRunner)" as Ctrl
+participant "PaymentService" as Svc
+participant "AccessPolicy" as Access
+participant "TransactionRunner" as Tx
+participant "LedgerReader" as Reader
+database "LedgerQueryRepository" as Ledger
+participant "BalanceCalculator" as Calc
+participant "Payment" as Pay
+database "PaymentRepository" as Repo
 
-Payer -> PaymentUi : enter group, recipient, amount, date, optional note
-PaymentUi -> PaymentService : recordPayment(actor, input, overpaymentConfirmed = false)
-note right of PaymentUi : Runs off the EDT. The UI does not compare amounts.
-PaymentService -> PaymentService : validate fields (FR-030)
-alt any field invalid, including missing group
-  PaymentService --> PaymentUi : ValidationException
-  PaymentUi --> Payer : mark fields; keep entered data
-else valid
-  PaymentService -> AccessPolicy : requireMember for actor and recipient
-  PaymentService -> TransactionManager : inTransaction
-  activate TransactionManager
-  PaymentService -> BalanceService : owedInGroup(groupId, payer, recipient)
-  BalanceService -> Repositories : APPROVED expenses and payments in the group
-  BalanceService -> BalanceLedger : from(records).net(recipient, payer)
-  BalanceLedger --> BalanceService : net
-  BalanceService --> PaymentService : amount owed (0 or more)
-  alt amount exceeds owed and not confirmed (FR-032)
-    PaymentService --> PaymentUi : OverpaymentConfirmationRequiredException(owed, entered)
-    deactivate TransactionManager
-    PaymentUi --> Payer : warn; Cancel is the default
-    alt payer confirms
-      PaymentUi -> PaymentService : recordPayment(actor, input, overpaymentConfirmed = true)
-      note right of PaymentService
-        Repeats the same flow.
-        Amount owed is rechecked in a new transaction.
+Payer -> Panel : group, recipient, amount, date, optional note
+Panel -> Ctrl : submit raw values
+Ctrl -> Svc : recordPayment(session, draft without acknowledgedOwed)
+Svc -> Access : requireSession(session)
+Svc -> Svc : PREPARE: parse amount, date, note; collect FieldErrors
+Svc -> Tx : inTransaction
+activate Tx
+Tx -> Access : requireActiveMember(session, group)
+alt payer not an active member
+  Tx --> Ctrl : NotFoundException, rollback
+else payer is a member
+  Tx -> Tx : VALIDATE: recipient active and not self\n(MembershipRepository.areActiveMembers)
+  alt any FieldError (FR-030)
+    Tx --> Ctrl : ValidationException, rollback
+    Ctrl --> Panel : field errors; input kept
+  else valid
+    Tx -> Reader : owedBy(payer, recipient, group)
+    Reader -> Ledger : entriesForPair(group, payer, recipient)
+    note right of Ledger : Approved shares and payments only.\nOnly the named group (FR-027).
+    Reader -> Calc : calculate(entries)
+    Calc --> Reader : BalanceSheet
+    Reader --> Tx : owedNow (0 or more)
+    alt amount above owedNow, and acknowledgedOwed absent or different (FR-032)
+      Tx --> Svc : nothing written, rollback
+      Svc --> Ctrl : OverpaymentWarning(owedNow, attempted)
+      Ctrl --> Panel : dialog shows both amounts; Cancel is the default
+      alt payer cancels
+        Panel --> Payer : form kept; no payment recorded
+      else payer confirms
+        Panel -> Ctrl : confirm
+        Ctrl -> Svc : recordPayment(session, draft with acknowledgedOwed = owedNow)
+        note right of Svc : Runs this flow again.\nA changed amount owed gives a fresh warning (DEC-27).
+      end
+    else within owedNow, or acknowledged amount matches
+      Tx -> Pay : create(...), overpaymentConfirmed set if the guard fired
+      Tx -> Repo : insert(payment)
+      note right of Repo
+        FR-031: applies at commit; no recipient confirmation.
+        Balance is derived, so no balance row changes.
+        Other group balances do not change.
+        Insert-only (NFR-006). Creates no notification (DEC-17).
       end note
-    else payer cancels
-      PaymentUi --> Payer : nothing is saved
+      Tx --> Svc : commit
+      Svc --> Ctrl : Recorded(paymentView)
+      Ctrl --> Panel : confirmation; refresh balances
     end
-  else within owed, or confirmed
-    PaymentService -> Repositories : insert immutable Payment (NFR-006)
-    note right of Repositories
-      FR-031: applies at once; no recipient confirmation.
-      Balance changes because it is derived from this record.
-      No other group's balance changes.
-    end note
-    PaymentService --> PaymentUi : PaymentView
-    PaymentUi --> Payer : recorded; visible to payer and recipient (FR-033)
   end
 end
+deactivate Tx
+
+== History (FR-033) ==
+Payer -> Ctrl : open history
+Ctrl -> Svc : paymentHistory(session, group)
+Svc -> Tx : readOnly
+Tx -> Repo : listForUser(user, group)
+note right of Repo : Same records for payer and recipient,\nincluding after leaving the group (BR-16).
+Svc --> Ctrl : payment views
+
+note over Svc, Repo
+  Worked example, Story 6 scenario 2: sam owes alex 30.00 and pays 40.00.
+  Warning, then confirmed. Entries: sam owes alex 30.00; alex owes sam 40.00.
+  Net: alex owes sam 10.00.
+end note
 
 @enduml

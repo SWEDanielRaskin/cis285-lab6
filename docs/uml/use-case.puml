@@ -1,0 +1,80 @@
+@startuml use-case
+!pragma layout smetana
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: specs/001-splitsmart-expense-sharing/spec.md (Use cases UC-01 to UC-13)
+title SplitSmart MVP Use Cases (conditional draft: OC-1 open)
+
+skinparam packageStyle rectangle
+
+actor "Visitor" as Visitor
+actor "Registered User" as User
+actor "Group Member" as Member
+actor "Group Admin" as Admin
+actor "Expense Creator" as Creator
+actor "Approver\n(participant, not creator)" as Approver
+
+Member --|> User
+Admin --|> Member
+Creator --|> Member
+Approver --|> Member
+
+rectangle "SplitSmart desktop application (MVP)" {
+  usecase "UC-01 Register" as UC01
+  usecase "UC-02 Log in" as UC02
+  usecase "UC-03 Log out" as UC03
+  usecase "UC-04 Create and list groups,\nview members" as UC04
+  usecase "UC-04 Rename group,\nadd member" as UC04A
+  usecase "UC-05 Leave group" as UC05
+  usecase "UC-05 Remove member" as UC05A
+  usecase "Check exit guard\n(BR-22)" as Guard
+  usecase "UC-06 Create expense" as UC06
+  usecase "UC-07 Edit or delete\nPending expense" as UC07
+  usecase "Allocate shares\n(BR-04 to BR-06)" as Alloc
+  usecase "Attach receipt" as Attach
+  usecase "UC-08 View receipt" as UC08
+  usecase "UC-09 Approve or reject\nexpense" as UC09
+  usecase "UC-10 Read notifications" as UC10
+  usecase "UC-11 View balances" as UC11
+  usecase "UC-12 Record payment" as UC12
+  usecase "Confirm overpayment\n(FR-032)" as Over
+  usecase "View payment history" as Hist
+  usecase "UC-13 Generate report" as UC13
+  usecase "Filter report by date, group,\nother user, status" as Filter
+}
+
+Visitor --> UC01
+Visitor --> UC02
+User --> UC03
+User --> UC04
+User --> UC10
+User --> UC11
+User --> UC13
+User --> Hist
+Member --> UC05
+Member --> UC06
+Member --> UC08
+Member --> UC12
+Admin --> UC04A
+Admin --> UC05A
+Approver --> UC09
+Creator --> UC07
+
+UC05 ..> Guard : <<include>>
+UC05A ..> Guard : <<include>>
+UC06 ..> Alloc : <<include>>
+UC07 ..> Alloc : <<include>>
+Attach ..> UC06 : <<extend>>
+Over ..> UC12 : <<extend>>
+Filter ..> UC13 : <<extend>>
+
+legend bottom left
+  **Not in the MVP, so not drawn as use cases:**
+  web and mobile access (FR-039; DEC-01, DEC-02),
+  external notifications (FR-018), multi-level approval (FR-025),
+  archive (FR-009), saved or exported reports (FR-038).
+  **OC-1 is open:** this desktop MVP does not satisfy CR-10.
+  No external actor or system exists in the MVP.
+  People share one computer and take turns (DEC-03).
+endlegend
+
+@enduml

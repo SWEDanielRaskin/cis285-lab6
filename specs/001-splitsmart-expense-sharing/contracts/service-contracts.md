@@ -1,161 +1,139 @@
 # Service Contracts (`ui` → `service`)
 
-**Status**: Draft. AI-generated; not human reviewed.
+**Status**: Draft — Reconciliation Incomplete. Conventions and common failures are in [README.md](README.md). `VE` = `ValidationException`, `CE` = `ConflictException`, `BRE` = `BusinessRuleException`.
 
-Conventions and the error model are in [README.md](README.md). All failures below use those exception
-types. `VE` = `ValidationException`, `AE` = `AuthorizationException`, `NF` = `NotFoundException`,
-`CE` = `ConflictException`. `NC-n` marks a working default that is still an open question
-([research.md](../research.md#unresolved-questions)).
+**Transaction** column: **Write** is one `inTransaction` in canonical order. **Read** is one `readOnly` scope. **Side effects** list everything other than the stated return value.
 
 ## AccountService
 
-| Operation | Inputs | Output | Validation and failures | Authorization | FR/NFR |
-|-----------|--------|--------|-------------------------|---------------|--------|
-| `register` | username, displayName, password | UserSummary | VE: username 3 to 30 characters; username taken, ignoring case; display name missing; password under 8 characters | None (visitor) | FR-001, FR-004 |
-| `login` | username, password | UserSummary | `AuthenticationFailedException` with an identical message for unknown username and wrong password. `AccountLockedException` during a lock, even with the correct password | None (visitor) | FR-002, NFR-002 |
-| `findUserByUsername` | actor, username | UserSummary | NF if there is no exact match, ignoring case | Any signed-in user. Exact match only; no browsing of all users | FR-006 |
+| Operation | Inputs | Output | Errors | Authorization | Transaction | Side effects | Requirements |
+|---|---|---|---|---|---|---|---|
+| `register` | `RegisterCommand(usernameText, displayNameText, password char[])` | `UserSummary` | VE: username not 3–30, or taken in any case; display name not 1–50; password under 8, stating the minimum | Visitor | Hash in PREPARE, then Write | Inserts `User`; clears the password array | FR-001, FR-004, BR-29 |
+| `login` | `LoginCommand(usernameText, password char[])` | `Session` | `AuthenticationFailedException` with one message for wrong username or password; `AccountLockedException(lockedUntil)` during a lock | Visitor | **Special:** Read user; verify outside any transaction; Write login state and **commit before raising** | Updates `failedLoginCount` and `lockedUntil`; clears the password array | FR-002, NFR-002, BR-26 |
+| `logout` | `Session` | none | none | Session holder | None | Invalidates the `Session` in memory; later calls with it get `AccessDeniedException` | FR-002 |
 
-- Login side effects, in one transaction: count a failure and possibly start a lock, or reset the count.
-  **The failure exception is raised only after that transaction commits.** Raising it inside would roll
-  back the count, and the lockout would never trigger.
-- Passwords are never returned or logged. `UserSummary` has only ID, username, and display name.
-- Logout is a UI session action and needs no service call (FR-002; see
-  [ui-interactions.md](ui-interactions.md)).
+**Login rules:** A locked account is refused before any password check, and the attempt neither counts nor extends the lock. An unknown username still runs one hash. Comparison is constant-time. Success clears the count.
 
 ## GroupService
 
-| Operation | Inputs | Output | Validation and failures | Authorization | FR |
-|-----------|--------|--------|-------------------------|---------------|----|
-| `createGroup` | actor, name | GroupSummary | VE: name 1 to 50 characters | Any signed-in user. Actor becomes admin and first member | FR-005 |
-| `renameGroup` | actor, groupId, name | GroupSummary | VE: name 1 to 50 characters | Admin only | FR-008 |
-| `addMember` | actor, groupId, userId | MemberSummary | NF: unknown user. CE: already a current member | Admin only | FR-006 |
-| `removeMember` | actor, groupId, userId | None | CE with the outstanding balance if member net is not $0.00 (FR-007, NC-6). Pending-expense rule: NC-4. Removing the admin: NC-5 | Admin only | FR-006, FR-007 |
-| `leaveGroup` | actor, groupId | None | Same checks as `removeMember` for the actor | Current member | FR-006, FR-007 |
-| `listMyGroups` | actor | List of GroupSummary | None | Own current memberships only | FR-003, FR-008 |
-| `getGroupDetail` | actor, groupId | GroupDetail (name, admin, current members) | NF if not visible | Current member | FR-003, FR-008 |
+| Operation | Inputs | Output | Errors | Authorization | Transaction | Side effects | Requirements |
+|---|---|---|---|---|---|---|---|
+| `createGroup` | `Session`, `nameText` | `GroupDetailView` | VE: name not 1–50 | Any session | Write | Inserts `Group` and first `Membership`; creator is admin | FR-005 |
+| `renameGroup` | `Session`, `GroupId`, `nameText` | `GroupDetailView` | VE: name not 1–50 | Admin | Write | Updates name | FR-008 |
+| `addMember` | `Session`, `GroupId`, `usernameText` | `GroupDetailView` | VE: unknown username. `BRE(ALREADY_MEMBER)` | Admin | Write | Inserts `Membership`. A former member gets a new row | FR-006, BR-24 |
+| `removeMember` | `Session`, `GroupId`, `UserId` | `GroupDetailView` | `BRE(MEMBER_HAS_BALANCE, pairs)`, `BRE(MEMBER_IN_PENDING_EXPENSE, expenses)`, `BRE(USE_LEAVE_FOR_SELF)` | Admin | Write | Ends the `Membership`, with `endedBy` = admin | FR-006, FR-007, BR-22 |
+| `leaveGroup` | `Session`, `GroupId` | none | `BRE(MEMBER_HAS_BALANCE, pairs)`, `BRE(MEMBER_IN_PENDING_EXPENSE, expenses)` | Active member | Write | Ends the `Membership`; if the admin left and members remain, `Group.assignAdmin` to the next in order | FR-006, FR-007, BR-22, BR-23 |
+| `listMyGroups` | `Session` | `List<GroupSummaryView>` | none | Own active memberships | Read | none | FR-003, FR-008 |
+| `getGroupDetail` | `Session`, `GroupId` | `GroupDetailView` (name, admin, active members, `canManage`) | none beyond common | Active member | Read | none | FR-003, FR-008 |
 
-- A former member's visibility follows NC-3.
-- `archiveGroup` is **not** in the MVP (FR-009, Post-MVP).
+FR-009 (archive) has **no MVP operation**.
 
 ## ExpenseService
 
-`ExpenseInput` holds: groupId, amountText, dateText, description, payerId (empty means the creator),
-ordered participant IDs, splitMethod, percentage text per participant (percentage only), and an optional
-`ReceiptUpload` (file name and bytes).
+`ExpenseDraft` = `(groupId, amountText, dateText, descriptionText, payerId?, splitMethod, participants: ordered List<ParticipantInput(userId, percentText?)>)`. `ReceiptUpload` = `(fileName, InputStream supplier)`. `ReceiptChange` = `KEEP`, `REMOVE`, or `REPLACE(ReceiptUpload)`.
 
-| Operation | Inputs | Output | Validation and failures | Authorization | FR |
-|-----------|--------|--------|-------------------------|---------------|----|
-| `createExpense` | actor, ExpenseInput | ExpenseDetail with status PENDING | VE lists every invalid field; see rules below | Actor is a current member of the group | FR-010 to FR-015, FR-017, FR-020 |
-| `editPendingExpense` | actor, expenseId, expectedVersion, ExpenseInput | ExpenseDetail with new version | Same VE rules. CE: not Pending, or stale version | Creator only | FR-016 |
-| `deletePendingExpense` | actor, expenseId, expectedVersion | None | CE: not Pending, or stale version | Creator only | FR-016 |
-| `getExpense` | actor, expenseId | ExpenseDetail (shares in saved order, decision if any, `canDecide` for actor) | NF if not visible | Current member, or per NC-3 | FR-003, FR-024 |
-| `listGroupExpenses` | actor, groupId, optional status | List of ExpenseSummary | NF if not visible | Current member, or per NC-3 | FR-003 |
-| `getReceipt` | actor, expenseId | ReceiptImage, or empty | NF if not visible | Current group member | FR-014 |
+| Operation | Inputs | Output | Errors | Authorization | Transaction | Side effects | Requirements |
+|---|---|---|---|---|---|---|---|
+| `createExpense` | `Session`, `ExpenseDraft`, `ReceiptUpload?` | `ExpenseDetailView` (Pending) | VE: see field rules | Active member | Receipt read in PREPARE, then Write | Inserts expense, shares, receipt; `NotificationDispatcher.expenseCreated` | FR-010 to FR-015, FR-017, FR-020 |
+| `updateExpense` | `Session`, `ExpenseId`, `expectedVersion`, `ExpenseDraft`, `ReceiptChange` | `ExpenseDetailView` | VE as above; CE(`ALREADY_DECIDED`, `STALE_VERSION`) | Creator | Write | Replaces fields and shares; version + 1; `NotificationDispatcher.expenseEdited` | FR-016, BR-18 |
+| `deleteExpense` | `Session`, `ExpenseId`, `expectedVersion` | none | CE as above | Creator | Write | Removes expense, shares, receipt; clears notification links | FR-016, BR-18 |
+| `getExpense` | `Session`, `ExpenseId` | `ExpenseDetailView`: fields, ordered shares, status, version, `DecisionView?`, `hasReceipt`, `canEdit`, `canDecide` | none beyond common | Readable expense | Read | none | FR-003, FR-012, FR-024 |
+| `listGroupExpenses` | `Session`, `GroupId`, `statuses?` | `List<ExpenseSummaryView>` | none beyond common | Active member | Read | none | FR-003, FR-008 |
+| `getReceipt` | `Session`, `ExpenseId` | `ReceiptContent(mediaType, bytes)` | `NotFoundException` when none | Active member of the group | Read | none | FR-014, BR-28 |
 
-**ExpenseInput validation (all reported together, FR-015):**
+**Field rules (all reported together, FR-015):**
 
-| Field | Rule |
-|-------|------|
-| amountText | Parses exactly; greater than 0; at most 1,000,000.00; at most 2 decimals. Never rounded |
-| dateText | `yyyy-MM-dd`; not later than today |
-| description | 1 to 200 characters |
-| payerId | Current group member |
-| participants | At least one; no duplicates; all current members; at least one other than the creator |
-| splitMethod | EQUAL or PERCENTAGE |
-| percentages | PERCENTAGE only: one per participant; 0.00 to 100.00; at most 2 decimals; total exactly 100.00 |
-| receipt | Optional; JPEG or PNG by file content; at most 5 MB |
-
-**Effects of `createExpense`, in one transaction:** allocate shares with `SplitAllocator`, save the
-expense, shares, and receipt, and notify through `NotificationService`. Balances do not change.
-
-**Effects of an edit:** recalculate shares and increase the version. Notification behavior on edit and
-delete is NC-9.
+| Field | Rule | Checked in |
+|---|---|---|
+| amount | BR-27 | PREPARE |
+| date | `yyyy-MM-dd`, real date, today or earlier | PREPARE |
+| description | 1–200 characters | PREPARE |
+| participants | At least one; no duplicates; at least one other than the creator | PREPARE |
+| percentages | Percentage only: one per participant; 0.00–100.00; at most 2 decimals; total exactly 100.00 | PREPARE |
+| receipt | BR-28 | PREPARE |
+| payer | Active member; empty means the creator | VALIDATE |
+| participants | All active members | VALIDATE |
 
 ## ApprovalService
 
-| Operation | Inputs | Output | Validation and failures | Authorization | FR |
-|-----------|--------|--------|-------------------------|---------------|----|
-| `approve` | actor, expenseId, expectedVersion, optional reason | ApprovalDecisionView | CE: not Pending, or stale version | Eligible approver | FR-021, FR-022, FR-024 |
-| `reject` | actor, expenseId, expectedVersion, reason | ApprovalDecisionView | VE: reason 1 to 200 characters. CE: not Pending, or stale version | Eligible approver | FR-021 to FR-024 |
-| `listAwaitingMyDecision` | actor | List of ExpenseSummary | None | Own items only | FR-021 |
-
-- **Eligible approver**: A participant other than the creator, and a current member. Otherwise AE,
-  including when the actor is the creator (FR-022).
-- **Effects, in one transaction**: Conditional status update, insert the immutable decision, and notify
-  the creator. If the conditional update finds the expense already decided, the result is CE, the "first
-  decision wins" rule.
-- Only `approve` can make an expense count toward balances.
-
-## NotificationService
-
-| Operation | Inputs | Output | Validation and failures | Authorization | FR |
-|-----------|--------|--------|-------------------------|---------------|----|
-| `listMine` | actor | List of NotificationView, newest first, each with computed `needsApproval` | None | Own only | FR-017, FR-019 |
-| `unreadCount` | actor | Integer | None | Own only | FR-019 |
-| `markRead` | actor, notificationId | None | NF if it is not the actor's | Own only | FR-019 |
-| `notifyExpenseCreated` | expense | None | Internal; joins the caller's transaction | Called by `ExpenseService` | FR-017 |
-| `notifyExpenseDecided` | expense, decision | None | Internal; joins the caller's transaction | Called by `ApprovalService` | FR-023 |
-
-- `notifyExpenseCreated` sends to every **current** group member except the creator, so removed members
-  get nothing (Story 7 scenario 4).
-- `notifyExpenseCreated` and `notifyExpenseDecided` are not for UI use.
-- No delivery outside the app (FR-018, Post-MVP).
+| Operation | Inputs | Output | Errors | Authorization | Transaction | Side effects | Requirements |
+|---|---|---|---|---|---|---|---|
+| `approve` | `Session`, `ExpenseId`, `expectedVersion`, `reasonText?` | `ExpenseDetailView` (Approved) | VE: reason over 200; CE(`ALREADY_DECIDED`, `STALE_VERSION`) | Eligible approver; the creator gets `AccessDeniedException` | Write | Conditional status update; inserts `ApprovalDecision`; `NotificationDispatcher.expenseDecided`; expense enters balances at commit | FR-021, FR-022, FR-024, FR-026 |
+| `reject` | `Session`, `ExpenseId`, `expectedVersion`, `reasonText` | `ExpenseDetailView` (Rejected) | VE: reason not 1–200; CE as above | Same | Write | Same, except balances never include it | FR-021 to FR-024 |
+| `listPendingForMe` | `Session` | `List<ExpenseSummaryView>` | none | Own eligibility only | Read | none | FR-017, FR-021 |
 
 ## BalanceService
 
-| Operation | Inputs | Output | Validation and failures | Authorization | FR |
-|-----------|--------|--------|-------------------------|---------------|----|
-| `getMyBalances` | actor | List of PairBalance: other user, overall net and direction, per-group amounts adding up to it | None | Only pairs involving the actor | FR-027, FR-028, NFR-003 |
-| `getGroupBalances` | actor, groupId | Pair balances for that group | NF if not visible | Current member | FR-027, FR-003 |
-| `memberNetInGroup` | groupId, userId | Money | Internal | Used by `GroupService` | FR-007 |
-| `owedInGroup` | groupId, payerId, recipientId | Money, 0 or more | Internal | Used by `PaymentService` | FR-032 |
+| Operation | Inputs | Output | Errors | Authorization | Transaction | Side effects | Requirements |
+|---|---|---|---|---|---|---|---|
+| `myBalances` | `Session` | `List<CounterpartyBalanceView(otherUser, netAmount, direction, groupLines: List<GroupBalanceLine(groupId, groupName, amount, direction)>)>` | none | Own pairs | Read | none | FR-027, FR-028 |
+| `groupBalances` | `Session`, `GroupId` | `List<GroupPairBalanceView(debtor, creditor, amount)>`, including settled pairs | none beyond common | Active member | Read | none | FR-003, FR-027 |
 
-- All operations use `BalanceLedger`, which reads Approved expenses and payments only (FR-020, SC-005).
+**Guarantees:** Only Approved expenses and payments count (FR-020, FR-026). Per-group lines add up to the net, using direction as sign (FR-028). `netAmount` is non-negative, and `direction` is `OWES_ME`, `I_OWE`, or `SETTLED`.
 
 ## PaymentService
 
-`PaymentInput` holds: groupId, recipientId, amountText, dateText, and an optional note.
+`PaymentDraft` = `(groupId, recipientId, amountText, dateText, noteText?, acknowledgedOwed?)`. The payer is always the session user.
 
-| Operation | Inputs | Output | Validation and failures | Authorization | FR |
-|-----------|--------|--------|-------------------------|---------------|----|
-| `recordPayment` | actor, PaymentInput, overpaymentConfirmed | PaymentView | VE: see rules below. `OverpaymentConfirmationRequiredException` when the amount exceeds what is owed and confirmation is false | The actor is the payer | FR-030 to FR-032 |
-| `listMyPayments` | actor, optional groupId | List of PaymentView, as payer or recipient | None | Own only | FR-033 |
+| Operation | Inputs | Output | Errors | Authorization | Transaction | Side effects | Requirements |
+|---|---|---|---|---|---|---|---|
+| `recordPayment` | `Session`, `PaymentDraft` | Sealed `PaymentOutcome`: `Recorded(PaymentView)` or `OverpaymentWarning(owedNow, attempted)` | VE: amount (BR-27); date; note over 200; recipient is self or not an active member | Payer is an active member of the group | Write. `OverpaymentWarning` writes nothing | Inserts immutable `Payment`; balance changes at commit, with no recipient action | FR-030 to FR-032, BR-14, BR-15 |
+| `paymentHistory` | `Session`, `GroupId?` | `List<PaymentView>` where the user is payer or recipient, newest first | none | Own payments, including former groups | Read | none | FR-033, BR-16 |
 
-**PaymentInput rules:**
+**Overpayment rule:** `owedNow` = what the payer currently owes the recipient in that group, or 0. When `amount > owedNow`: if `acknowledgedOwed` is absent or differs from `owedNow`, return the warning. If it matches, record with `overpaymentConfirmed = true`. Paying exactly what is owed gives no warning.
 
-| Field | Rule |
-|-------|------|
-| groupId | Required; the actor and the recipient are both current members |
-| recipientId | Required; not the actor |
-| amountText | Greater than 0; at most 2 decimals; maximum per NC-11 |
-| dateText | `yyyy-MM-dd`; not later than today |
-| note | Optional; up to 200 characters |
+## NotificationService
 
-**Effects:** The overpayment check and the insert run in one transaction, with `overpaymentConfirmed`
-applied to the amount owed at that moment. The payment applies immediately, with no recipient
-confirmation (FR-031). There are no update or delete operations (NFR-006).
+| Operation | Inputs | Output | Errors | Authorization | Transaction | Side effects | Requirements |
+|---|---|---|---|---|---|---|---|
+| `unreadCount` | `Session` | int | none | Own, within visibility scope | Read | none | FR-019 |
+| `list` | `Session` | `List<NotificationView(id, type, message, needsApproval, read, expenseId?, expenseDeleted, createdAt)>`, newest first | none | Own, within visibility scope | Read | none | FR-017, FR-019, FR-023 |
+| `markRead` | `Session`, `Set<NotificationId>` | none | Others' IDs are ignored | Own rows only | Write | Sets `readAt` | FR-019 |
+
+**Creation is not on this interface.** `NotificationDispatcher` is internal and joins the caller's transaction:
+
+| Method | Called by | Effect | Requirements |
+|---|---|---|---|
+| `expenseCreated(expense)` | `DefaultExpenseService` | `EXPENSE_CREATED` for every active member except the creator | FR-017 |
+| `expenseEdited(expense, addedParticipants)` | `DefaultExpenseService` | For each added participant other than the creator: reset their row to unread, or insert one | BR-18, DEC-16 |
+| `expenseDecided(expense, decision)` | `DefaultApprovalService` | `EXPENSE_APPROVED` or `EXPENSE_REJECTED` for the creator, with reason if any | FR-023 |
 
 ## ReportService
 
-| Operation | Inputs | Output | Validation and failures | Authorization | FR |
-|-----------|--------|--------|-------------------------|---------------|----|
-| `generateReport` | actor, ReportCriteria | Report | VE: invalid date text, or end before start. No matches gives zero totals, not an error | Data involving the actor only; NF for a group that isn't visible | FR-034 to FR-037, NFR-003 |
+`ReportFilterInput` = `(fromText?, toText?, groupId?, otherUserId?, statuses?)`.
 
-- Definitions are in [data-model.md](../data-model.md#report-derived), under NC-8 and NC-10.
-- Save and export are **not** in the MVP (FR-038, Post-MVP).
+| Operation | Inputs | Output | Errors | Authorization | Transaction | Side effects | Requirements |
+|---|---|---|---|---|---|---|---|
+| `filterOptions` | `Session` | `ReportFilterOptions(groups, otherUsers)`: groups the user is or was in, and people who share a ledger entry or a group with them | none | Own | Read | none | FR-035, NFR-003 |
+| `generate` | `Session`, `ReportFilterInput` | `Report` | VE: date unparseable; `from` after `to`. No matches gives zero totals, not an error | Own data, within visibility scope | Read | none | FR-034 to FR-037, NFR-003 |
 
-## Supporting collaborators (not called by `ui`)
+**Guarantees:** BR-19, BR-20, BR-21. Save and export have **no MVP operation** (FR-038).
 
-| Type | Package | Responsibility | FR/NFR |
-|------|---------|----------------|--------|
-| `AccessPolicy` | service | Member, admin, participant, and visibility checks | FR-003, FR-006, FR-021, FR-022, NFR-003 |
-| `PasswordHasher` | service | Hash and verify, behind an interface (`Pbkdf2PasswordHasher` proposed) | FR-004, NFR-002 |
-| `SplitAllocator` | domain | Equal and percentage allocation with leftover cents | FR-011 to FR-013 |
-| `BalanceLedger` | domain | Net balance calculation from supplied records | FR-026 to FR-029 |
-| `java.time.Clock` | JDK | "Today" and timestamps, injected | NFR-002, NFR-006, NFR-009 |
+## Internal collaborators (not called by `ui`)
+
+| Type | Operations | Errors | Requirements |
+|---|---|---|---|
+| `AccessPolicy` | `requireSession(Session)`, `requireActiveMember(Session, GroupId)`, `requireAdmin(Session, GroupId)`, `requireExpenseReadable(Session, Expense)`, `requireReceiptReadable(Session, Expense)`, `requireEligibleApprover(Session, Expense)`, `visibleScope(Session)` | `AccessDeniedException`, `NotFoundException` | FR-003, FR-006, FR-014, FR-021, FR-022, NFR-003 |
+| `LedgerReader` | `sheetForGroups(Set<GroupId>)`, `sheetInvolving(GroupId, UserId)`, `owedBy(payerId, recipientId, GroupId)`, `entriesForUser(UserId, VisibilityScope)` | none | FR-007, FR-027, FR-032, FR-037 |
+| `GroupExitPolicy` | `checkExit(GroupId, UserId)` | `BRE` | FR-007 |
+| `PasswordHasher` | `hash(char[])`, `verify(char[], PasswordHash)` | none | FR-004, NFR-002 |
+| `ExpenseDraftValidator` | `parse(ExpenseDraft)`: values plus `FieldError`s | none; errors are collected | FR-010, FR-013, FR-015 |
+| `ReceiptInspector` | `inspect(ReceiptUpload)`: `Receipt` or a `FieldError` | none | FR-014, DEC-25 |
+| `FieldFormats` | `parseDate(text)`, `date(LocalDate)`, `money(Money)` | none | FR-041 |
+
+## Errors reference
+
+| Type | Fields |
+|---|---|
+| `ValidationException` | `List<FieldError>` |
+| `AuthenticationFailedException` | None; fixed message |
+| `AccountLockedException` | `lockedUntil` |
+| `AccessDeniedException` | None; generic message |
+| `NotFoundException` | Entity kind |
+| `ConflictException` | `ALREADY_DECIDED` or `STALE_VERSION` |
+| `BusinessRuleException` | Code, message, details |
+| `PersistenceFailureException` | Cause, which is logged and not displayed |
 
 ## Post-MVP operations intentionally absent
 
-`archiveGroup` (FR-009), external notification preferences (FR-018), multi-level approval configuration
-(FR-025), saved or exported reports (FR-038), and any web interface (FR-039). They stay customer
-requirements or derived requirements in the spec; they are simply not in this MVP design.
+`archiveGroup` (FR-009), external notification preferences (FR-018), multi-level approval configuration (FR-025), saved or exported reports (FR-038), and any web interface (FR-039).

@@ -1,0 +1,89 @@
+@startuml approve-or-reject-expense-activity
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: design.md section 4, BR-09, BR-10
+title Approve or Reject Expense\nFR-021 to FR-024, FR-026 (conditional draft: OC-1 open)
+
+|Approver|
+start
+:Open expense from Awaiting My Approval
+or a flagged notification;
+
+|UI|
+:Show live detail, version, and canDecide;
+
+|Approver|
+if (Decision?) then (approve)
+  :Choose Approve; optional reason;
+else (reject)
+  :Choose Reject; enter reason;
+endif
+
+|UI|
+:Send decision with the version shown;
+
+|ApprovalService|
+:PREPARE: check session; check reason length;
+:BEGIN transaction; load expense;
+if (Expense visible?) then (no)
+  :Roll back;
+  |UI|
+  :Show generic "not found" message;
+  stop
+else (yes)
+endif
+|ApprovalService|
+if (AUTHORIZE: participant, not creator,
+active member?) then (no)
+  :Roll back;
+  |UI|
+  :Show refusal (FR-021, FR-022);
+  stop
+else (yes)
+endif
+|ApprovalService|
+if (VALIDATE: rejection has a reason of 1 to 200
+characters; any reason is at most 200?) then (no)
+  :Roll back;
+  |UI|
+  :Show reason field error; keep input;
+  stop
+else (yes)
+endif
+|ApprovalService|
+if (GUARD: still Pending, and version matches?) then (no)
+  :Roll back;
+  |UI|
+  :Show "no longer pending" or
+  "changed, review again"; reload;
+  stop
+else (yes)
+endif
+|ApprovalService|
+:Conditional status update;
+if (One row updated?) then (no)
+  :Roll back: another decision or an edit won;
+  |UI|
+  :Show conflict message; reload;
+  stop
+else (yes)
+endif
+|ApprovalService|
+:Insert immutable ApprovalDecision
+(approver, outcome, reason, time);
+note right
+  Exactly one per expense.
+  No update or delete exists (NFR-006).
+end note
+:Notify creator, with reason if any;
+:COMMIT;
+if (Outcome?) then (Approved)
+  :Non-payer participants now owe the payer
+  their shares; the payer share creates no debt;
+else (Rejected)
+  :Balances never include this expense;
+endif
+|UI|
+:Show status, approver, and time;
+stop
+
+@enduml

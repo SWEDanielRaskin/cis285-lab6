@@ -1,51 +1,58 @@
 # Contracts: SplitSmart Swing MVP
 
-**Status**: Draft. AI-generated; not human reviewed (Constitution Principle VII).
-**Date**: 2026-11-04 | **Plan**: [../plan.md](../plan.md) | **Data model**: [../data-model.md](../data-model.md)
+**Status**: Draft — Reconciliation Incomplete. **Date**: 2026-11-05
 
-These are design contracts between layers, written as tables. They are not code.
+These contracts define in-process Java boundaries, written as tables. They are not code. Parameter and return shapes are proposals (AD-02). Rules are defined in [spec.md](../spec.md#business-rules).
 
-| File | Boundary | Direction |
-|------|----------|-----------|
-| [service-contracts.md](service-contracts.md) | `ui` → `service` | Use cases, validation, authorization |
-| [repository-contracts.md](repository-contracts.md) | `service` → `repository` | Persistence |
-| [ui-interactions.md](ui-interactions.md) | User → `ui` → `service` | Screens, controllers, keyboard |
+| File | Boundary |
+|---|---|
+| [service-contracts.md](service-contracts.md) | `ui` → `service` |
+| [repository-contracts.md](repository-contracts.md) | `service` → `repository` |
+| [ui-interactions.md](ui-interactions.md) | User → `ui` → `service` |
 
 ## Contract types that do not apply
 
 | Type | Why not |
-|------|---------|
-| Public REST or HTTP API | The Swing MVP runs in one process with no network interface. Inventing endpoints would imply a web deliverable that has not been authorized and would obscure OC-1. FR-039 remains Post-MVP |
-| Inter-service messaging, webhooks | One process with no external systems |
-| Email or push delivery | FR-018 is Post-MVP; ID-08 uses in-application delivery |
+|---|---|
+| REST or HTTP API | The MVP runs in one process with no network interface. Inventing endpoints would imply a web deliverable that nobody has authorized (OC-1) |
+| Messaging, webhooks | One process, no external systems |
+| Email or push | FR-018 is Post-MVP; ID-08 uses in-app delivery |
 | File export format | FR-038 is Post-MVP |
-| Public library API | SplitSmart is an application, not a library |
 
-**OC-1 note**: Service contracts have no Swing types, which keeps a future web client possible. That
-is a design property only. It does not satisfy CR-10.
+**OC-1 note:** Service contracts contain no Swing types, which keeps a later web client possible. That is a design property only. It does not satisfy CR-10.
 
-## Conventions
+## Conventions for every service operation
 
-- **Actor**: Each operation that needs a signed-in user takes `actor` (a `UserId`) as its first input
-  and checks permission itself. The UI may hide controls, but that is not the enforcement.
-- **Raw input**: Fields typed by users arrive as text, and `service` parses them, so validation does
-  not live in Swing.
-- **Money output**: `Money`. Formatting for display happens in `ui` (FR-041).
-- **Threading**: Services are called off the Event Dispatch Thread (research R-03).
-- **Transactions**: A service operation that writes runs in one transaction.
+1. **Session first.** Except for `register` and `login`, every operation takes a `Session` (AD-03).
+2. **Raw input.** Typed values arrive as text, and services parse them (AD-02). Nothing is rounded.
+3. **Immutable output.** Operations return views or value objects. Mutable entities never cross the boundary.
+4. **Off the EDT.** Callers invoke services through `UiTaskRunner`.
+5. **Canonical order.** Mutating calls run PREPARE → BEGIN → AUTHORIZE → VALIDATE → GUARD → EFFECT → COMMIT ([DEC-26](../decisions/decision-log.md#dec-26-canonical-operation-order)). Authorization runs inside the transaction and before validation failures are reported, so refusals reveal nothing.
+6. **One transaction per mutating call.** Commit on return, roll back on any exception. Read operations that combine figures use one `readOnly` scope.
+7. **Time.** All time comes from the injected `Clock`.
 
-## Error model
+## Common failures
 
-All are unchecked exceptions, declared in `domain` so that every layer can use them.
+These can occur on any `Session` operation and are not repeated in each table.
 
-| Exception | Meaning | UI behavior | Requirements |
-|-----------|---------|-------------|--------------|
-| `ValidationException` | Carries a list of `FieldError` (field, problem, how to fix it) | Marks each field and keeps all entered data | FR-015, NFR-007 |
-| `AuthenticationFailedException` | Wrong username or password; does not say which | Generic login message | FR-002 |
-| `AccountLockedException` | Too many failed logins | "Temporarily locked" message | NFR-002 |
-| `AuthorizationException` | The actor may not do this or see this | "Not allowed" message; shows no protected data | FR-003, FR-006, FR-022, NFR-003 |
-| `NotFoundException` | The item does not exist or is not visible to the actor. Both give the same result, so existence isn't leaked | Message; refresh the view | FR-003, NFR-003 |
-| `ConflictException` | State changed first, such as "no longer pending" or a stale version | Message; reload the item | FR-024, Edge Cases |
-| `OverpaymentConfirmationRequiredException` | Carries amount owed and amount entered | Confirmation dialog, then repeat the call with confirmation | FR-032 |
-| `DataAccessException` | Unexpected storage failure, declared in `repository` | Generic message; logged; the transaction is rolled back | NFR-005 |
-| `DuplicateKeyException` | A unique rule was violated, declared in `repository` | Never reaches the UI directly: services map it to `ValidationException` or `ConflictException` | FR-001, FR-006, FR-024 |
+| Exception | Meaning |
+|---|---|
+| `AccessDeniedException` | The session is ended, or the record is visible but this action is not permitted |
+| `NotFoundException` | The record does not exist or is not visible. Identical either way, so existence does not leak |
+| `PersistenceFailureException` | Storage failed; the transaction rolled back |
+
+`ValidationException` carries `List<FieldError>`, where `FieldError` = `(field, message)`. All invalid fields are reported together, and each message says how to fix the field (FR-015, NFR-007).
+
+## Authorization vocabulary
+
+| Term | Definition |
+|---|---|
+| **Active member** | Has a membership in the group with no `leftAt` |
+| **Admin** | `Group.adminId` equals the session user, who is an active member |
+| **Eligible approver** | Participant of the expense, not its creator, and an active member |
+| **Personally involved** | Creator, payer, or participant of the expense; or payer or recipient of the payment |
+| **Readable expense** | Session user is an active member of its group, or is a former member and personally involved |
+
+## Requirement tags
+
+Each contract row lists requirement IDs. Open semantics are decided in the [decision log](../decisions/decision-log.md).

@@ -1,79 +1,133 @@
 @startuml expense-approval-sequence
-' Status: Draft. AI-generated; not human reviewed (Constitution Principle VII).
-' Syntax not yet checked: PlantUML is not available on the authoring machine.
-' Written design: specs/001-splitsmart-expense-sharing/contracts/service-contracts.md
-title Expense Creation and Approval (FR-010 to FR-017, FR-020 to FR-024; Draft)
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: contracts/service-contracts.md, design.md section 4, DEC-26
+title Expense Creation, Edit, Delete, and Approval\nFR-010 to FR-017, FR-020 to FR-024 (conditional draft: OC-1 open)
 
 actor "Creator" as Creator
 actor "Approver\n(participant, not creator)" as Approver
-participant "ExpenseFormDialog\nExpenseController" as ExpenseUi
-participant "ExpenseDetailDialog\nApprovalController" as ApprovalUi
-participant ExpenseService
-participant ApprovalService
-participant AccessPolicy
-participant "Expense" as ExpenseEntity
-participant SplitAllocator
-participant NotificationService
-participant TransactionManager
-database Repositories
+participant "ExpenseFormPanel\nExpenseDetailPanel" as Panel
+participant "ExpenseController\nApprovalController\n(via UiTaskRunner)" as Ctrl
+participant "ExpenseService" as ExpSvc
+participant "ApprovalService" as ApprSvc
+participant "ExpenseDraftValidator\nReceiptInspector" as Validator
+participant "AccessPolicy" as Access
+participant "TransactionRunner" as Tx
+participant "SplitAllocator" as Alloc
+participant "Expense" as Exp
+database "ExpenseRepository\nReceiptRepository\nApprovalDecisionRepository" as Repo
+participant "NotificationDispatcher" as Disp
 
-== Create (FR-010 to FR-015, FR-017, FR-020) ==
-Creator -> ExpenseUi : enter fields and ordered participants
-ExpenseUi -> ExpenseService : createExpense(actor, input)
-note right of ExpenseUi : Runs off the EDT. The UI computes no shares.
-ExpenseService -> AccessPolicy : requireMember(actor, groupId)
-ExpenseService -> ExpenseService : parse and validate all fields
-alt any field invalid (FR-015)
-  ExpenseService --> ExpenseUi : ValidationException(all field errors)
-  ExpenseUi --> Creator : mark fields; keep entered data
-else valid
-  ExpenseService -> SplitAllocator : allocate(amount, ordered participants)
-  note right of SplitAllocator
-    FR-011 to FR-013: floor each share, then
-    leftover cents one each in saved order
-  end note
-  SplitAllocator --> ExpenseService : shares totaling the amount exactly
-  ExpenseService -> ExpenseEntity : create(...) with status PENDING
-  ExpenseService -> TransactionManager : inTransaction
-  activate TransactionManager
-  ExpenseService -> Repositories : insert expense, shares, receipt
-  ExpenseService -> NotificationService : notifyExpenseCreated(expense)
-  NotificationService -> Repositories : insert notifications (see notification diagram)
-  deactivate TransactionManager
-  ExpenseService --> ExpenseUi : ExpenseDetail (PENDING)
-  ExpenseUi --> Creator : show shares. Balances are unchanged (FR-020)
+== Create: PREPARE, BEGIN, AUTHORIZE, VALIDATE, EFFECT, COMMIT ==
+Creator -> Panel : amount, date, description, payer,\nordered participants, split, optional receipt
+Panel -> Ctrl : submit raw values
+note right of Ctrl : Off the EDT. No rule logic in ui.
+Ctrl -> ExpSvc : createExpense(session, draft, receipt)
+ExpSvc -> Access : requireSession(session)
+ExpSvc -> Validator : parse(draft), inspect(receipt)
+Validator --> ExpSvc : values and collected FieldErrors
+ExpSvc -> Tx : inTransaction
+activate Tx
+Tx -> Access : requireActiveMember(session, group)
+alt not an active member
+  Access --> ExpSvc : NotFoundException (no field errors revealed)
+  ExpSvc --> Ctrl : NotFoundException, rollback
+else member
+  Tx -> Tx : VALIDATE: payer and participants active\n(MembershipRepository.areActiveMembers)
+  alt any FieldError (FR-015)
+    Tx --> ExpSvc : ValidationException, rollback
+    ExpSvc --> Ctrl : ValidationException(all FieldErrors)
+    Ctrl --> Panel : show each error, keep all input
+  else valid
+    Tx -> Alloc : allocate(amount, splitRequest)
+    note right of Alloc
+      BR-04 to BR-06: floor each share, then one leftover
+      cent each in listed order. Shares total the amount.
+    end note
+    Alloc --> Tx : ordered shares
+    Tx -> Exp : create(...) with status PENDING
+    Tx -> Repo : insert(expense), put(receipt) if any
+    Tx -> Disp : expenseCreated(expense)
+    note right of Disp
+      Other active members, in this transaction (SC-006).
+      A failure rolls back the whole unit. In-app only.
+      See notification-sequence.
+    end note
+    Tx --> ExpSvc : commit
+    ExpSvc --> Ctrl : ExpenseDetailView (Pending)
+    Ctrl --> Panel : shares in listed order; balances unchanged (FR-020)
+  end
+end
+deactivate Tx
+
+== Edit or delete while Pending (FR-016) ==
+Creator -> Ctrl : edit, or delete, with the version shown
+Ctrl -> ExpSvc : updateExpense(session, id, expectedVersion, draft, receiptChange)\nor deleteExpense(session, id, expectedVersion)
+ExpSvc -> Tx : inTransaction
+activate Tx
+Tx -> Access : requireExpenseReadable; session user is creator?
+alt not the creator
+  Tx --> Ctrl : AccessDeniedException, rollback
+else creator
+  Tx -> Repo : updateIfVersionMatches or deleteIfPending
+  alt returned false: decided or stale
+    Tx --> Ctrl : ConflictException, rollback
+  else edit succeeded
+    Tx -> Disp : expenseEdited(expense, addedParticipants)
+    note right of Disp : DEC-16: only people who newly became participants.
+  else delete succeeded
+    note right of Repo : Shares and receipt cascade; notification links clear.\nNo new notification.
+  end
+end
+deactivate Tx
+
+== Approve or reject (FR-021 to FR-024) ==
+Approver -> Panel : open expense
+Panel -> Ctrl : load
+Ctrl -> ExpSvc : getExpense(session, id)
+ExpSvc --> Panel : detail with canDecide and version
+
+alt approve
+  Approver -> Ctrl : Approve
+  Ctrl -> ApprSvc : approve(session, id, expectedVersion, reason)
+else reject
+  Approver -> Ctrl : Reject with reason
+  Ctrl -> ApprSvc : reject(session, id, expectedVersion, reason)
 end
 
-== Decide (FR-021 to FR-024) ==
-Approver -> ApprovalUi : approve, or reject with reason
-ApprovalUi -> ApprovalService : approve or reject(actor, id, version, reason)
-ApprovalService -> Repositories : findById(id)
-ApprovalService -> ExpenseEntity : isEligibleApprover(actor)
-alt not eligible, including the creator (FR-021, FR-022)
-  ApprovalService --> ApprovalUi : AuthorizationException
-else rejection without a valid reason (FR-023)
-  ApprovalService --> ApprovalUi : ValidationException
+ApprSvc -> Access : requireSession(session)
+ApprSvc -> ApprSvc : PREPARE: check reason length
+ApprSvc -> Tx : inTransaction
+activate Tx
+Tx -> Repo : findById(id)
+Tx -> Access : requireEligibleApprover(session, expense)
+alt not visible
+  Tx --> Ctrl : NotFoundException, rollback
+else creator or non-participant (FR-021, FR-022)
+  Tx --> Ctrl : AccessDeniedException, rollback
+else invalid reason (FR-023)
+  Tx --> Ctrl : ValidationException, rollback
 else eligible
-  ApprovalService -> TransactionManager : inTransaction
-  activate TransactionManager
-  ApprovalService -> Repositories : decideIfPending(id, version, status)
-  alt already decided or stale version (Edge Cases: first decision wins)
-    Repositories --> ApprovalService : false
-    ApprovalService --> ApprovalUi : ConflictException (rollback)
-    ApprovalUi --> Approver : no longer pending; reload
-  else updated
-    Repositories --> ApprovalService : true
-    ApprovalService -> Repositories : insert immutable ApprovalDecision (FR-024, NFR-006)
-    ApprovalService -> NotificationService : notifyExpenseDecided(expense, decision)
-    NotificationService -> Repositories : insert creator notification (FR-023)
-    deactivate TransactionManager
-    ApprovalService --> ApprovalUi : ApprovalDecisionView
-    alt approved
-      ApprovalUi --> Approver : Approved. Now counted in balances
-    else rejected
-      ApprovalUi --> Approver : Rejected. Never counted in balances
+  alt expense not Pending or version differs
+    Tx --> Ctrl : ConflictException(ALREADY_DECIDED or STALE_VERSION), rollback
+    Ctrl --> Panel : "no longer pending" or "changed, review again"; reload
+  else guard passed
+    Tx -> Exp : approve(approver, reason, now) or reject(approver, reason, now)
+    Exp --> Tx : ApprovalDecision
+    Tx -> Repo : updateStatusIfPending(id, expectedVersion, status, now)
+    alt false: another decision or an edit won
+      Tx --> Ctrl : ConflictException, rollback
+    else true
+      Tx -> Repo : insert(decision)
+      note right of Repo : Append-only; unique per expense (NFR-006).
+      Tx -> Disp : expenseDecided(expense, decision)
+      note right of Disp : FR-023: creator, with reason if any.
+      Tx --> ApprSvc : commit
+      note over Tx : At commit an Approved expense enters balances (FR-026).\nRejected never does. No balance row exists to update.
+      ApprSvc --> Ctrl : ExpenseDetailView
+      Ctrl --> Panel : status, approver, time
     end
   end
 end
+deactivate Tx
 
 @enduml

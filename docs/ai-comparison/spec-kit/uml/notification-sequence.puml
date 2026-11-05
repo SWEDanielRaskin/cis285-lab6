@@ -1,0 +1,57 @@
+@startuml notification-sequence
+' Status: Draft. AI-generated; not human reviewed (Constitution Principle VII).
+' Syntax not yet checked: PlantUML is not available on the authoring machine.
+' Written design: specs/001-splitsmart-expense-sharing/contracts/service-contracts.md
+title Notifications (FR-017, FR-019, FR-023; Draft)
+
+actor "Group member\n(not the creator)" as Member
+participant ExpenseService
+participant ApprovalService
+participant NotificationService
+participant "NotificationsPanel\nNotificationController" as NotificationUi
+database Repositories
+
+== Created with the expense, in the same transaction (FR-017, SC-006) ==
+ExpenseService -> NotificationService : notifyExpenseCreated(expense)
+NotificationService -> Repositories : findCurrentMembers(groupId)
+Repositories --> NotificationService : current members only
+NotificationService -> NotificationService : exclude the creator
+NotificationService -> Repositories : insertAll(EXPENSE_CREATED notifications)
+note right of NotificationService
+  Message states creator, group, description, amount, and date.
+  Former members receive nothing (Story 7 scenario 4).
+  In-application only (ID-08). FR-018 is Post-MVP.
+end note
+
+== Decision notice to the creator (FR-023) ==
+ApprovalService -> NotificationService : notifyExpenseDecided(expense, decision)
+NotificationService -> Repositories : insert EXPENSE_APPROVED or EXPENSE_REJECTED for the creator
+note right of NotificationService : Includes the reason, if any.
+
+== Read at login or on refresh (FR-019) ==
+Member -> NotificationUi : log in, or open Notifications
+NotificationUi -> NotificationService : unreadCount(actor)
+NotificationService -> Repositories : countUnread(actor)
+NotificationService --> NotificationUi : count
+NotificationUi -> NotificationService : listMine(actor)
+NotificationService -> Repositories : findByRecipient(actor), newest first
+NotificationService -> Repositories : load linked expenses
+NotificationService -> NotificationService : compute needsApproval
+note right of NotificationService
+  FR-017: true only if the expense is PENDING and the recipient
+  is a participant other than the creator. Computed, not stored,
+  so it disappears once the expense is decided.
+end note
+NotificationService --> NotificationUi : NotificationView list
+NotificationUi --> Member : show list and "needs your approval" markers
+
+Member -> NotificationUi : mark as read
+NotificationUi -> NotificationService : markRead(actor, id)
+NotificationService -> Repositories : markRead(id, recipient = actor, now)
+alt not this user's notification
+  NotificationService --> NotificationUi : NotFoundException
+else marked
+  NotificationService --> NotificationUi : done; unread count refreshes
+end
+
+@enduml

@@ -1,5 +1,7 @@
 # Specification Quality Checklist: SplitSmart Expense Sharing
 
+> **Historical note (2026-11-05):** This checklist records the spec as of 2026-10-29. The reconciliation found real ambiguities after these items were ticked. Current status is in [decisions/README.md](../decisions/README.md).
+
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-10-29
 **Feature**: [spec.md](../spec.md)

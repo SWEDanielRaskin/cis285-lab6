@@ -1,0 +1,39 @@
+@startuml expense-state
+!pragma layout smetana
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: data-model.md (Expense), BR-08 to BR-11
+title Expense Lifecycle\nFR-016, FR-020 to FR-024 (conditional draft: OC-1 open)
+
+[*] --> Pending : create / active member\n[fields valid; at least one participant is not the creator]
+
+Pending : status = PENDING
+Pending : no balance effect (FR-020)
+Pending : version increases on each edit
+
+Approved : status = APPROVED
+Approved : creates ledger entries (FR-026)
+Approved : final
+
+Rejected : status = REJECTED
+Rejected : never affects balances
+Rejected : final
+
+Pending --> Pending : edit / creator only\n[expectedVersion matches; fields valid]\nshares recomputed; version + 1
+Pending --> Approved : approve / eligible approver\n[expectedVersion matches]\nimmutable decision; creator notified
+Pending --> Rejected : reject / eligible approver\n[expectedVersion matches; reason 1 to 200 characters]\nimmutable decision; creator notified with reason
+Pending --> [*] : delete / creator only\n[expectedVersion matches]\nrow removed with shares and receipt;\nnotification links cleared
+
+note left of Pending
+  **Eligible approver:** participant, not the creator, active member.
+  One decision settles the expense; the first recorded wins.
+  Everyone referenced is active while Pending (INV-EXIT-2),
+  so an eligible approver always exists.
+end note
+
+note bottom of Approved
+  Approved and Rejected have no outgoing transitions: no edit,
+  delete, or status change. Attempts get ConflictException(ALREADY_DECIDED).
+  Rejected expenses are not resubmitted; create a new one (DEC-19).
+end note
+
+@enduml

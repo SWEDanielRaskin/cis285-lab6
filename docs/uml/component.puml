@@ -1,0 +1,98 @@
+@startuml component
+!pragma layout smetana
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: docs/architecture/architecture.md
+title SplitSmart Components and Dependency Direction (conditional draft: OC-1 open)
+
+skinparam componentStyle rectangle
+
+package "com.splitsmart.app" {
+  [SplitSmartApp, AppConfig\n(composition root)] as Root
+}
+
+package "com.splitsmart.ui (Swing: ID-03)" {
+  [Panels and dialogs\nMainFrame, HomePanel, ExpenseFormPanel,\nReceiptViewerDialog, ...] as Panels
+  [Controllers\nSessionController, GroupController, ExpenseController,\nApprovalController, BalanceController, PaymentController,\nNotificationController, ReportController] as Controllers
+  [UiTaskRunner, ErrorPresenter] as Runner
+}
+
+package "com.splitsmart.service (no GUI types)" {
+  [Service interfaces\nAccount, Group, Expense, Approval,\nBalance, Payment, Notification, Report] <<interface>> as ServiceApi
+  [Default* service implementations] as Services
+  [AccessPolicy\nFR-003, NFR-003] as Access
+  [LedgerReader\nFR-027, FR-032, FR-037] as Ledger
+  [GroupExitPolicy\nBR-22] as Exit
+  [NotificationDispatcher\nFR-017, FR-023; in-app only (ID-08)] as Dispatcher
+  [ExpenseDraftValidator, ReceiptInspector,\nFieldFormats, PasswordHasher] as Helpers
+}
+
+package "com.splitsmart.domain (JDK only)" {
+  [Entities\nUser, Group, Membership, Expense,\nApprovalDecision, Payment, Notification] as Entities
+  [Value objects\nMoney, Percentage, Share, Receipt, LedgerEntry, IDs] as Values
+  [Pure calculators\nSplitAllocator, BalanceCalculator, ReportCalculator] as Calculators
+}
+
+package "com.splitsmart.repository" {
+  [Repository interfaces\nand TransactionRunner] <<interface>> as RepoApi
+}
+
+package "com.splitsmart.repository.sqlite" {
+  [SQLite implementations,\nschema, migrations] as Sqlite
+}
+
+database "SQLite file in the data folder\nincludes expense_receipt BLOBs\n(DEC-05, FR-040, NFR-005)" as Db
+
+Panels --> Controllers : events
+Controllers --> Runner : schedule
+Runner --> ServiceApi : off-EDT call
+Controllers ..> Values : read-only values
+Services ..|> ServiceApi
+Services --> Access
+Services --> Ledger
+Services --> Exit
+Services --> Dispatcher
+Services --> Helpers
+Services --> Calculators
+Services --> Entities
+Services --> RepoApi
+Access --> RepoApi
+Ledger --> RepoApi
+Ledger --> Calculators
+Exit --> Ledger
+Exit --> RepoApi
+Dispatcher --> RepoApi
+Sqlite ..|> RepoApi : implements
+Sqlite --> Entities : maps
+Sqlite --> Db : SQL
+RepoApi --> Entities
+Entities --> Values
+Calculators --> Values
+
+Root ..> Panels : constructs
+Root ..> Services : constructs
+Root ..> Sqlite : constructs
+
+note top of Services
+  Canonical order inside each mutating call (DEC-26):
+  PREPARE, BEGIN, AUTHORIZE, VALIDATE, GUARD, EFFECT, COMMIT.
+end note
+
+note bottom of Calculators
+  No javax.swing, java.awt, or javax.imageio outside ui.
+  domain has no database or UI dependency.
+  JUnit source scan ARCH-01 enforces this (Principle III).
+end note
+
+note right of Panels
+  **OC-1 open:** Swing is ID-03 and does NOT satisfy CR-10.
+  No business rules or balance calculations here.
+end note
+
+note bottom of Db
+  **Local-installation limit (DEC-03):** one computer, one process,
+  one signed-in user at a time. People on separate computers
+  cannot share data. Network folders are unsupported.
+  Notifications are read at next login; no external delivery.
+end note
+
+@enduml

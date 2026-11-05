@@ -1,0 +1,72 @@
+@startuml authentication-lockout-sequence
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: contracts/service-contracts.md, DEC-23
+title Authentication and Lockout\nFR-002, FR-004, NFR-002 (conditional draft: OC-1 open)
+
+actor "Visitor" as Visitor
+participant "LoginPanel" as Panel
+participant "SessionController\n(via UiTaskRunner)" as Ctrl
+participant "AccountService" as Svc
+participant "TransactionRunner" as Tx
+database "UserRepository" as Repo
+participant "User" as UserEntity
+participant "PasswordHasher" as Hasher
+participant "Clock" as Clock
+
+Visitor -> Panel : username, password
+Panel -> Ctrl : submit; password field cleared
+Ctrl -> Svc : login(LoginCommand)
+Svc -> Clock : now
+Svc -> Tx : readOnly
+Tx -> Repo : findByUsernameKey(key)
+Repo --> Svc : user or empty
+
+alt unknown username
+  Svc -> Hasher : verify(password, dummy hash)
+  note right of Hasher : Limits timing differences.
+  Svc --> Ctrl : AuthenticationFailedException
+  Ctrl --> Panel : one generic message
+else account is locked: now before lockedUntil
+  note right of Svc
+    Refused before any password check.
+    The attempt neither counts nor extends the lock.
+    Revealing "locked" is an accepted trade-off (DEC-23).
+  end note
+  Svc --> Ctrl : AccountLockedException(lockedUntil)
+  Ctrl --> Panel : "temporarily locked"
+else not locked
+  Svc -> Hasher : verify(password, passwordHash)
+  note right of Hasher : Slow; runs outside any transaction.\nConstant-time comparison.
+  alt wrong password
+    Hasher --> Svc : false
+    Svc -> UserEntity : recordFailedLogin(now)
+    note right of UserEntity : A lock that has expired restarts the count.\nFifth failure: lockedUntil = now + 5 minutes.
+    Svc -> Tx : inTransaction
+    activate Tx
+    Tx -> Repo : updateLoginState(id, count, lockedUntil)
+    Tx --> Svc : **commit first**
+    deactivate Tx
+    note right of Svc : Raising inside the transaction would roll back\nthe count and disable lockout.
+    Svc --> Ctrl : AuthenticationFailedException
+    Ctrl --> Panel : one generic message
+  else correct password
+    Hasher --> Svc : true
+    Svc -> UserEntity : recordSuccessfulLogin()
+    Svc -> Tx : inTransaction
+    activate Tx
+    Tx -> Repo : updateLoginState(id, 0, none)
+    Tx --> Svc : commit
+    deactivate Tx
+    Svc --> Ctrl : Session
+    Ctrl --> Panel : open Home with unread count
+  end
+end
+
+== Log out (FR-002) ==
+Visitor -> Ctrl : Log Out
+Ctrl -> Svc : logout(session)
+Svc -> Svc : invalidate session
+Ctrl --> Panel : dispose user views; show Login
+note right of Ctrl : UiTaskRunner drops any late result\nfrom the ended session.
+
+@enduml

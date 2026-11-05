@@ -1,0 +1,341 @@
+@startuml service-class
+!pragma layout smetana
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: specs/001-splitsmart-expense-sharing/contracts/
+title SplitSmart Services and Repositories (conditional draft: OC-1 open)
+
+skinparam classAttributeIconSize 0
+hide empty members
+left to right direction
+
+package "com.splitsmart.service: interfaces" {
+  interface AccountService {
+    + register(RegisterCommand) : UserSummary
+    + login(LoginCommand) : Session
+    + logout(Session) : void
+  }
+  interface GroupService {
+    + createGroup(Session, nameText) : GroupDetailView
+    + renameGroup(Session, GroupId, nameText) : GroupDetailView
+    + addMember(Session, GroupId, usernameText) : GroupDetailView
+    + removeMember(Session, GroupId, UserId) : GroupDetailView
+    + leaveGroup(Session, GroupId) : void
+    + listMyGroups(Session) : List<GroupSummaryView>
+    + getGroupDetail(Session, GroupId) : GroupDetailView
+  }
+  interface ExpenseService {
+    + createExpense(Session, ExpenseDraft, ReceiptUpload) : ExpenseDetailView
+    + updateExpense(Session, ExpenseId, expectedVersion, ExpenseDraft, ReceiptChange) : ExpenseDetailView
+    + deleteExpense(Session, ExpenseId, expectedVersion) : void
+    + getExpense(Session, ExpenseId) : ExpenseDetailView
+    + listGroupExpenses(Session, GroupId, statuses) : List<ExpenseSummaryView>
+    + getReceipt(Session, ExpenseId) : ReceiptContent
+  }
+  interface ApprovalService {
+    + approve(Session, ExpenseId, expectedVersion, reasonText) : ExpenseDetailView
+    + reject(Session, ExpenseId, expectedVersion, reasonText) : ExpenseDetailView
+    + listPendingForMe(Session) : List<ExpenseSummaryView>
+  }
+  interface BalanceService {
+    + myBalances(Session) : List<CounterpartyBalanceView>
+    + groupBalances(Session, GroupId) : List<GroupPairBalanceView>
+  }
+  interface PaymentService {
+    + recordPayment(Session, PaymentDraft) : PaymentOutcome
+    + paymentHistory(Session, GroupId) : List<PaymentView>
+  }
+  interface NotificationService {
+    + unreadCount(Session) : int
+    + list(Session) : List<NotificationView>
+    + markRead(Session, ids) : void
+  }
+  interface ReportService {
+    + filterOptions(Session) : ReportFilterOptions
+    + generate(Session, ReportFilterInput) : Report
+  }
+}
+
+package "com.splitsmart.service: implementations" {
+  class DefaultAccountService
+  class DefaultGroupService
+  class DefaultExpenseService
+  class DefaultApprovalService
+  class DefaultBalanceService
+  class DefaultPaymentService
+  class DefaultNotificationService
+  class DefaultReportService
+}
+
+package "com.splitsmart.service: collaborators" {
+  class Session <<value object>> {
+    - userId : UserId
+    - displayName : String
+    - startedAt : Instant
+    ~ invalidate() : void
+  }
+  note top of Session : Constructor visible only inside service (AD-03).
+  class AccessPolicy {
+    + requireSession(Session) : void
+    + requireActiveMember(Session, GroupId) : void
+    + requireAdmin(Session, GroupId) : void
+    + requireExpenseReadable(Session, Expense) : void
+    + requireReceiptReadable(Session, Expense) : void
+    + requireEligibleApprover(Session, Expense) : void
+    + visibleScope(Session) : VisibilityScope
+  }
+  note left of AccessPolicy : FR-003, NFR-003, DEC-07
+  class LedgerReader {
+    + sheetForGroups(groupIds) : BalanceSheet
+    + sheetInvolving(GroupId, UserId) : BalanceSheet
+    + owedBy(payerId, recipientId, GroupId) : Money
+    + entriesForUser(UserId, VisibilityScope) : List<LedgerEntry>
+  }
+  class GroupExitPolicy {
+    + checkExit(GroupId, UserId) : void
+  }
+  note left of GroupExitPolicy : BR-22. Throws BusinessRuleException.
+  class NotificationDispatcher {
+    + expenseCreated(Expense) : void
+    + expenseEdited(Expense, addedParticipants) : void
+    + expenseDecided(Expense, ApprovalDecision) : void
+  }
+  note left of NotificationDispatcher : Sole creator of notifications.\nJoins the transaction of its caller.
+  interface PasswordHasher {
+    + hash(char[]) : PasswordHash
+    + verify(char[], PasswordHash) : boolean
+  }
+  class Pbkdf2PasswordHasher
+  class ExpenseDraftValidator {
+    + parse(ExpenseDraft) : ParsedExpenseDraft
+  }
+  class ReceiptInspector {
+    + inspect(ReceiptUpload) : Receipt
+  }
+  class FieldFormats {
+    + {static} parseDate(text) : LocalDate
+    + {static} date(LocalDate) : String
+    + {static} money(Money) : String
+  }
+}
+
+package "com.splitsmart.service: commands and views" {
+  class RegisterCommand <<record>>
+  class LoginCommand <<record>>
+  class ExpenseDraft <<record>> {
+    - groupId
+    - amountText
+    - dateText
+    - descriptionText
+    - payerId
+    - splitMethod
+    - participants : List<ParticipantInput>
+  }
+  class PaymentDraft <<record>> {
+    - groupId
+    - recipientId
+    - amountText
+    - dateText
+    - noteText
+    - acknowledgedOwed
+  }
+  class ReportFilterInput <<record>> {
+    - fromText
+    - toText
+    - groupId
+    - otherUserId
+    - statuses
+  }
+  abstract class PaymentOutcome <<sealed>>
+  class Recorded <<record>> {
+    - payment : PaymentView
+  }
+  class OverpaymentWarning <<record>> {
+    - owedNow : Money
+    - attempted : Money
+  }
+}
+
+package "com.splitsmart.service: errors" {
+  abstract class ServiceException <<sealed>>
+  class ValidationException {
+    - errors : List<FieldError>
+  }
+  class FieldError <<record>> {
+    - field : String
+    - message : String
+  }
+  class AuthenticationFailedException
+  class AccountLockedException {
+    - lockedUntil : Instant
+  }
+  class AccessDeniedException
+  class NotFoundException
+  class ConflictException {
+    - code : ALREADY_DECIDED or STALE_VERSION
+  }
+  class BusinessRuleException {
+    - code : String
+    - details : List<String>
+  }
+  class PersistenceFailureException
+}
+
+package "com.splitsmart.repository" {
+  interface TransactionRunner {
+    + inTransaction(work) : T
+    + readOnly(work) : T
+  }
+  interface UserRepository {
+    + insert(User) : void
+    + findByUsernameKey(key) : Optional<User>
+    + findById(UserId) : Optional<User>
+    + findSummaries(ids) : Map
+    + updateLoginState(UserId, count, lockedUntil) : void
+  }
+  interface GroupRepository {
+    + insert(Group) : void
+    + findById(GroupId) : Optional<Group>
+    + findByIds(ids) : List<Group>
+    + updateNameAndAdmin(Group) : void
+  }
+  interface MembershipRepository {
+    + insert(Membership) : void
+    + findActive(GroupId, UserId) : Optional<Membership>
+    + listActiveMembers(GroupId) : List<Membership>
+    + activeGroupIds(UserId) : Set<GroupId>
+    + everGroupIds(UserId) : Set<GroupId>
+    + areActiveMembers(GroupId, ids) : Set<UserId>
+    + end(MembershipId, leftAt, endedBy) : void
+    + listCoMembers(UserId) : Set<UserId>
+  }
+  interface ExpenseRepository {
+    + insert(Expense) : void
+    + findById(ExpenseId) : Optional<Expense>
+    + updateIfVersionMatches(Expense, expectedVersion) : boolean
+    + deleteIfPending(ExpenseId, expectedVersion) : boolean
+    + updateStatusIfPending(ExpenseId, expectedVersion, status, now) : boolean
+    + listByGroup(GroupId, statuses) : List<ExpenseSummaryRow>
+    + listPendingAwaiting(UserId) : List<ExpenseSummaryRow>
+    + findPendingInvolving(GroupId, UserId) : List<ExpenseSummaryRow>
+    + findForReport(UserId, ReportFilter, VisibilityScope) : List<ReportExpenseRow>
+  }
+  interface ReceiptRepository {
+    + put(ExpenseId, Receipt, uploadedAt) : void
+    + find(ExpenseId) : Optional<Receipt>
+    + exists(ExpenseId) : boolean
+    + delete(ExpenseId) : void
+  }
+  interface ApprovalDecisionRepository <<append-only>> {
+    + insert(ApprovalDecision) : void
+    + findByExpense(ExpenseId) : Optional<ApprovalDecision>
+  }
+  interface PaymentRepository <<append-only>> {
+    + insert(Payment) : void
+    + listForUser(UserId, GroupId) : List<Payment>
+    + findForReport(UserId, ReportFilter, VisibilityScope) : List<Payment>
+  }
+  interface NotificationRepository {
+    + insertAll(notifications) : void
+    + findCreatedForRecipient(ExpenseId, UserId) : Optional<Notification>
+    + resetToUnread(NotificationId) : void
+    + countUnread(UserId, VisibilityScope) : int
+    + listForRecipient(UserId, VisibilityScope) : List<NotificationRow>
+    + markRead(UserId, ids, now) : void
+  }
+  interface LedgerQueryRepository <<read-only>> {
+    + entriesForGroups(groupIds) : List<LedgerEntry>
+    + entriesForPair(GroupId, a, b) : List<LedgerEntry>
+    + entriesInvolving(GroupId, UserId) : List<LedgerEntry>
+    + entriesForUser(UserId, VisibilityScope) : List<LedgerEntry>
+  }
+  class RepositoryException <<exception>>
+  class DuplicateKeyException <<exception>>
+}
+
+package "com.splitsmart.domain (collaborators)" {
+  class SplitAllocator <<calculator>>
+  class BalanceCalculator <<calculator>>
+  class ReportCalculator <<calculator>>
+}
+
+AccountService <|.. DefaultAccountService
+GroupService <|.. DefaultGroupService
+ExpenseService <|.. DefaultExpenseService
+ApprovalService <|.. DefaultApprovalService
+BalanceService <|.. DefaultBalanceService
+PaymentService <|.. DefaultPaymentService
+NotificationService <|.. DefaultNotificationService
+ReportService <|.. DefaultReportService
+PasswordHasher <|.. Pbkdf2PasswordHasher
+PaymentOutcome <|-- Recorded
+PaymentOutcome <|-- OverpaymentWarning
+ServiceException <|-- ValidationException
+ServiceException <|-- AuthenticationFailedException
+ServiceException <|-- AccountLockedException
+ServiceException <|-- AccessDeniedException
+ServiceException <|-- NotFoundException
+ServiceException <|-- ConflictException
+ServiceException <|-- BusinessRuleException
+ServiceException <|-- PersistenceFailureException
+ValidationException *-- FieldError
+RepositoryException <|-- DuplicateKeyException
+
+DefaultAccountService --> UserRepository
+DefaultAccountService --> PasswordHasher
+DefaultAccountService ..> RegisterCommand
+DefaultAccountService ..> LoginCommand
+DefaultAccountService ..> Session : creates
+DefaultGroupService --> GroupRepository
+DefaultGroupService --> MembershipRepository
+DefaultGroupService --> UserRepository
+DefaultGroupService --> GroupExitPolicy
+DefaultGroupService --> AccessPolicy
+DefaultExpenseService --> ExpenseRepository
+DefaultExpenseService --> ReceiptRepository
+DefaultExpenseService --> MembershipRepository
+DefaultExpenseService --> ApprovalDecisionRepository
+DefaultExpenseService --> ExpenseDraftValidator
+DefaultExpenseService --> ReceiptInspector
+DefaultExpenseService --> SplitAllocator
+DefaultExpenseService --> NotificationDispatcher
+DefaultExpenseService --> AccessPolicy
+DefaultExpenseService ..> ExpenseDraft
+DefaultApprovalService --> ExpenseRepository
+DefaultApprovalService --> ApprovalDecisionRepository
+DefaultApprovalService --> NotificationDispatcher
+DefaultApprovalService --> AccessPolicy
+DefaultBalanceService --> LedgerReader
+DefaultBalanceService --> MembershipRepository
+DefaultBalanceService --> AccessPolicy
+DefaultPaymentService --> PaymentRepository
+DefaultPaymentService --> LedgerReader
+DefaultPaymentService --> AccessPolicy
+DefaultPaymentService ..> PaymentDraft
+DefaultPaymentService ..> PaymentOutcome : returns
+DefaultNotificationService --> NotificationRepository
+DefaultNotificationService --> AccessPolicy
+DefaultReportService --> ExpenseRepository
+DefaultReportService --> PaymentRepository
+DefaultReportService --> MembershipRepository
+DefaultReportService --> LedgerReader
+DefaultReportService --> ReportCalculator
+DefaultReportService --> AccessPolicy
+DefaultReportService ..> ReportFilterInput
+LedgerReader --> LedgerQueryRepository
+LedgerReader --> BalanceCalculator
+GroupExitPolicy --> LedgerReader
+GroupExitPolicy --> ExpenseRepository
+NotificationDispatcher --> NotificationRepository
+NotificationDispatcher --> MembershipRepository
+NotificationDispatcher ..> FieldFormats
+AccessPolicy --> MembershipRepository
+AccessPolicy --> GroupRepository
+ExpenseDraftValidator ..> FieldFormats
+
+note bottom of TransactionRunner
+  Every Default*Service also receives TransactionRunner,
+  and Clock where it needs time. Those lines are omitted for readability.
+  All collaborators arrive by constructor (Principle III). FR-040, AD-09.
+end note
+
+@enduml

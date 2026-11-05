@@ -1,117 +1,148 @@
 # UI Interaction Contracts (User → `ui` → `service`)
 
-**Status**: Draft. AI-generated; not human reviewed. Swing is implementation decision ID-03, not a
-customer requirement, and it does not satisfy CR-10 (OC-1).
+**Status**: Draft — Reconciliation Incomplete. Swing is implementation decision ID-03, not a customer requirement, and it does not satisfy CR-10 (OC-1).
 
-## Rules for all Swing classes
+## Rules for every Swing class
 
-1. Views collect input, call a controller, and render results. They contain no business rules or
-   balance calculations (Principle III).
-2. Controllers call services through `UiAsync`, which runs them off the Event Dispatch Thread and
-   delivers results back on it (ID-03, research R-03).
-3. While a call runs, the triggering control is disabled so it can't be submitted twice.
-4. Failures go through `ErrorPresenter`, following the [error model](README.md#error-model).
-5. Hiding a control is a convenience only. Services enforce permissions.
-6. Amounts always display with a currency symbol and 2 decimals, and dates as `yyyy-MM-dd`, through one
-   `DisplayFormats` class (FR-041).
-7. Every primary task works with the keyboard alone: mnemonics, Tab order, Enter for the default button,
-   and Escape to cancel (NFR-008).
+| Rule | Meaning |
+|---|---|
+| No business rules | Panels and controllers never compare money, compute shares, or decide eligibility (Principle III). They use view flags (`canEdit`, `canDecide`, `canManage`) and service outcomes |
+| Threading | Service calls run through `UiTaskRunner`: one background thread, with results rendered on the EDT (ID-03) |
+| Double submission | `UiTaskRunner` disables the triggering control until the call returns |
+| Parsing and formatting | Input goes as text. Display uses `FieldFormats`: amounts `$1,234.50`, dates `yyyy-MM-dd` (FR-041). Direction is in words, never a negative amount |
+| Form state | Input is kept until a successful save (FR-015) |
+| Hiding | Hiding a control is a convenience. Services enforce permissions |
+| Logout | Discards `Session`, disposes all user-specific views, and clears cached data. `UiTaskRunner` drops any result that arrives after the session changed |
+| Keyboard | Every action has a mnemonic or accelerator. Tab order follows visual order. Dialogs set default and cancel buttons. Labels use `setLabelFor`. `JTable` Enter opens the selected row. Focus is visible. On validation failure, focus moves to the first invalid field (NFR-008) |
 
 ## Navigation
 
-Each primary task is at most 3 steps from Home (NFR-007):
+A **step** is one activation that changes the view or commits an action. Entering field data is not a step (DEC-21).
 
-| Task | Path from Home | Steps |
-|------|----------------|-------|
-| Create group | Groups → New Group | 2 |
-| Create expense | New Expense | 1 |
-| Approve or reject | Awaiting My Approval → choose an expense → Approve or Reject | 3 |
-| Record payment | Record Payment | 1 |
-| Run report | Reports → Generate | 2 |
-| Register | Starts on the login screen, before Home: Create Account | 1 |
+| Task | Start | Path | Steps |
+|---|---|---|---|
+| Register | Login screen | Create Account (then submit) | 2 |
+| Create group | Home | Groups → New Group (then submit) | 3 |
+| Create expense | Home | New Expense (then submit) | 2 |
+| Approve or reject | Home | Awaiting My Approval → open expense → Approve or Reject | 3 |
+| Record payment | Home | Record Payment (then submit) | 2 |
+| Run report | Home | Reports → Generate | 2 |
+
+```text
+Login ──▶ Register
+  │ success
+  ▼
+Home ──┬─▶ Groups ──▶ Group Detail ──▶ Add Member / Remove / Leave / Rename / Group Balances
+       ├─▶ New Expense
+       ├─▶ Awaiting My Approval ──▶ Expense Detail ──▶ Approve / Reject / View Receipt
+       ├─▶ Balances ──▶ Record Payment (prefilled)
+       ├─▶ Record Payment
+       ├─▶ Payment History
+       ├─▶ Notifications ──▶ Expense Detail
+       └─▶ Reports
+```
 
 ## Screens and controllers
 
-| View | Controller | Service calls | FR/NFR |
-|------|------------|---------------|--------|
-| `LoginPanel` | `SessionController` | `AccountService.login`, `register` | FR-001, FR-002, NFR-002 |
-| `HomePanel` | `SessionController`, `NotificationController` | `unreadCount`, `getMyBalances`, `listMyGroups` | FR-003, FR-019, FR-028 |
-| `GroupsPanel`, `GroupDetailPanel` | `GroupController` | `GroupService.*`, `findUserByUsername`, `getGroupBalances` | FR-005 to FR-008 |
-| `ExpenseFormDialog` | `ExpenseController` | `createExpense`, `editPendingExpense` | FR-010 to FR-016 |
-| `ExpenseDetailDialog` | `ExpenseController`, `ApprovalController` | `getExpense`, `deletePendingExpense`, `approve`, `reject` | FR-016, FR-021 to FR-024 |
+| Panel | Controller | Service calls | Requirements |
+|---|---|---|---|
+| `LoginPanel`, `RegisterPanel` | `SessionController` | `AccountService.login`, `register` | FR-001, FR-002, NFR-002 |
+| `HomePanel` | `SessionController`, `NotificationController` | `unreadCount`, `listPendingForMe`, `myBalances`, `logout` | FR-002, FR-003, FR-019, FR-028 |
+| `GroupListPanel`, `GroupDetailPanel` | `GroupController` | `createGroup`, `renameGroup`, `addMember`, `removeMember`, `leaveGroup`, `listMyGroups`, `getGroupDetail` | FR-005 to FR-008 |
+| `ExpenseFormPanel` | `ExpenseController` | `getGroupDetail`, `createExpense`, `updateExpense` | FR-010 to FR-016 |
+| `ExpenseDetailPanel` | `ExpenseController`, `ApprovalController` | `getExpense`, `deleteExpense`, `approve`, `reject` | FR-012, FR-016, FR-021 to FR-024 |
 | `ReceiptViewerDialog` | `ExpenseController` | `getReceipt` | FR-014 |
-| `ApprovalsPanel` | `ApprovalController` | `listAwaitingMyDecision` | FR-021 |
-| `NotificationsPanel` | `NotificationController` | `listMine`, `markRead` | FR-017, FR-019, FR-023 |
-| `BalancesPanel` | `BalanceController` | `getMyBalances` | FR-027, FR-028 |
-| `PaymentDialog`, `PaymentHistoryPanel` | `PaymentController` | `recordPayment`, `listMyPayments` | FR-030 to FR-033 |
-| `ReportPanel` | `ReportController` | `generateReport` | FR-034 to FR-037 |
+| `PendingApprovalsPanel` | `ApprovalController` | `listPendingForMe` | FR-021 |
+| `BalancesPanel`, `GroupBalancesPanel` | `BalanceController` | `myBalances`, `groupBalances` | FR-027, FR-028 |
+| `PaymentFormPanel`, `OverpaymentConfirmDialog` | `PaymentController` | `recordPayment` | FR-030 to FR-032 |
+| `PaymentHistoryPanel` | `PaymentController` | `paymentHistory` | FR-033 |
+| `NotificationsPanel` | `NotificationController` | `list`, `markRead` | FR-017, FR-019, FR-023 |
+| `ReportPanel` | `ReportController` | `filterOptions`, `generate` | FR-034 to FR-037 |
+| `MainFrame` | wired in `SplitSmartApp` | `CardLayout` host | NFR-007 |
+| `UiTaskRunner`, `ErrorPresenter` | helpers | | ID-03, NFR-004, NFR-007 |
 
-`MainFrame` owns navigation, and `Session` holds the signed-in user's ID and name.
+## Mapping results to the screen
+
+| Result | Behavior |
+|---|---|
+| View | Passes it to the panel |
+| `ValidationException` | Shows each `FieldError` beside its field, keeps all input, focuses the first (FR-015, NFR-007, NFR-008) |
+| `AuthenticationFailedException` | One message; password field cleared (FR-002) |
+| `AccountLockedException` | "Temporarily locked" (NFR-002) |
+| `AccessDeniedException` | Generic refusal; returns to the prior screen |
+| `NotFoundException` | Message; refreshes the list |
+| `ConflictException(ALREADY_DECIDED)` | "This expense is no longer pending"; reloads detail |
+| `ConflictException(STALE_VERSION)` | "This expense changed. Review it again"; reloads detail |
+| `BusinessRuleException` | Dialog with the service's message and details |
+| `PersistenceFailureException` or unexpected | Generic message; form kept; detail goes only to the log |
 
 ## Key interactions
 
 ### Log in and log out
 
-| Step | Behavior |
-|------|----------|
-| Submit | Password is passed as characters; the field is cleared afterward |
-| Success | `Session` is created and Home opens with the unread count |
-| Wrong credentials | The same message for an unknown user or wrong password (FR-002) |
-| Locked | "Temporarily locked" message (Story 1 scenario 6) |
-| Log out | `Session` is cleared, **all user-specific views are disposed**, and the login screen opens (FR-002, Story 1 scenario 4) |
+| Step | Panel and controller | Service |
+|---|---|---|
+| 1 | `LoginPanel` submits username and password characters; the field is cleared | `AccountService.login` |
+| 2 | `SessionController` stores `Session` and opens Home | `unreadCount`, `listPendingForMe`, `myBalances` |
+| 3 | Log Out disposes user views and opens Login | `AccountService.logout` |
 
 ### Create or edit an expense
 
-| Step | Behavior |
-|------|----------|
-| Open | Payer defaults to the signed-in user |
-| Choose participants | An ordered list with move up and move down, because order decides who gets leftover cents (FR-012). The order is sent to the service as shown |
-| Choose split | Percentage fields appear only for PERCENTAGE |
-| Submit | Raw text goes to the service, and **the UI does not compute shares** |
-| `ValidationException` | Each field shows its error, and **all entered data stays**, including when a receipt is refused (FR-015, Edge Cases) |
-| Success | Shares returned by the service are displayed |
+| Step | Panel and controller | Service |
+|---|---|---|
+| 1 | `ExpenseFormPanel` selects a group; payer defaults to the signed-in user | `getGroupDetail` for member choices |
+| 2 | User enters fields and orders participants with Move Up and Move Down, or Alt+Up and Alt+Down, because order decides who gets leftover cents (FR-012). Percentage fields appear only for percentage splits | |
+| 3 | `ExpenseController` builds `ExpenseDraft`; the UI computes no shares | `createExpense` or `updateExpense` |
+| 4a | Success opens `ExpenseDetailPanel` showing service-computed shares in order | |
+| 4b | `ValidationException` stays on the form with all data intact, including when a receipt is refused | |
 
-The form may show the percentage total as a typing aid. The service remains the authority.
+No share preview exists in the MVP, because it would duplicate a rule in the UI or need a new operation.
 
-### Decide on an expense
+### Approve or reject
 
-| Step | Behavior |
-|------|----------|
-| Open detail | Approve and Reject are enabled only if the service reports `canDecide` |
-| Reject | The reason is required; the service enforces it (FR-023) |
-| Submit | The version shown to the user is sent with the decision |
-| `ConflictException` | "This expense is no longer pending" or "has changed", then reload (Edge Cases) |
+| Step | Panel and controller | Service |
+|---|---|---|
+| 1 | `PendingApprovalsPanel` or a flagged notification opens the detail | `getExpense` |
+| 2 | Approve and Reject are enabled only when `canDecide` is true | |
+| 3 | Approve, or Reject with a reason dialog; `expectedVersion` comes from the view shown | `approve` or `reject` |
+| 4 | Status, decision, approver, and time are displayed | |
 
 ### Record a payment
 
-| Step | Behavior |
-|------|----------|
-| Submit | `recordPayment` with `overpaymentConfirmed = false` |
-| `OverpaymentConfirmationRequiredException` | A dialog shows the amount owed and the amount entered, with **Cancel as the default choice** (FR-032) |
-| User confirms | The call repeats with `overpaymentConfirmed = true` |
-| User cancels | Nothing is saved |
+| Step | Panel and controller | Service |
+|---|---|---|
+| 1 | `PaymentFormPanel` submits `PaymentDraft` with no acknowledgment | `recordPayment` |
+| 2a | `Recorded`: shows confirmation and refreshes balances | `myBalances` |
+| 2b | `OverpaymentWarning(owedNow, attempted)`: `OverpaymentConfirmDialog` shows both amounts, with **Cancel as the default** | |
+| 3 | Confirm resubmits with `acknowledgedOwed = owedNow` | `recordPayment` |
+| 4 | Cancel keeps the form; nothing was written | |
 
-The comparison happens in the service, never in the dialog.
+If the amount owed changed between steps, a fresh warning appears. The comparison happens in the service, never in the dialog.
 
 ### Notifications
 
-| Step | Behavior |
-|------|----------|
-| Login and after each action | The unread count refreshes (FR-019) |
-| Open the list | Newest first. A "needs your approval" marker appears when the service reports `needsApproval`. Text is also used, not color alone |
-| Activate an item | Marks it read and opens the expense if it still exists |
-| Delivery | Stored in-app, and read at the next login if the user was signed out. No polling (research R-19) |
+| Step | Panel and controller | Service |
+|---|---|---|
+| 1 | `HomePanel` shows the unread count, refreshed at login and on return to Home. No polling | `unreadCount` |
+| 2 | `NotificationsPanel` lists newest first. "Needs your approval" uses text, not color alone. A deleted expense shows "(expense deleted)" | `list` |
+| 3 | Marking read, or activating an item, marks it read and opens the expense if it still exists | `markRead`, `getExpense` |
 
 ### Reports
 
-| Step | Behavior |
-|------|----------|
-| Filters | Start date, end date, group, other user, status; all optional (FR-035) |
-| Generate | The service builds the report, and **the UI does not total anything** |
-| Display | Lines with status, totals, and filtered and current balances shown under separate labels (NC-8) |
-| No matches | An empty table with zero totals (Story 8 scenario 4) |
+| Step | Panel and controller | Service |
+|---|---|---|
+| 1 | `ReportPanel` loads choices | `filterOptions` |
+| 2 | User sets optional filters and generates | `generate` |
+| 3 | Renders lines, totals, "Not included in totals" memo, and opening, period, later, and current for each person. Shows "As of" the generation time. Rendering does no arithmetic | |
+
+### View a receipt
+
+| Step | Panel and controller | Service |
+|---|---|---|
+| 1 | `ExpenseDetailPanel` offers View Receipt when `hasReceipt` is true | `getReceipt` |
+| 2 | `ReceiptViewerDialog` checks declared dimensions against the 50-megapixel limit, then decodes off the EDT with `javax.imageio` | |
+| 3 | A corrupt or over-limit image shows a message, not a stack trace | |
 
 ## Manual verification
 
-Swing behavior that can't reasonably be unit tested gets written manual steps linked to FRs, as Principle
-V requires. See scenarios V-20 and later in [quickstart.md](../quickstart.md).
+Swing behavior that cannot reasonably be unit tested has written manual steps linked to FRs, as Principle V requires. See UI-01 to UI-09 in the [validation plan](../validation-plan.md).

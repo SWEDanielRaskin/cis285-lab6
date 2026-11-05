@@ -1,111 +1,130 @@
 # Repository Contracts (`service` → `repository`)
 
-**Status**: Draft. AI-generated; not human reviewed.
+**Status**: Draft — Reconciliation Incomplete. Interfaces live in `repository`, and implementations in `repository.sqlite` (DEC-05). No operation exposes SQL, JDBC, or SQLite types.
 
-Interfaces live in `repository`. Proposed SQLite implementations live in `repository.sqlite` (PD-06).
-Nothing here exposes JDBC, SQL, or Swing types to `service`, so a storage change stays inside the
-implementations. Repositories store and find data; business rules stay in `domain` and `service`.
-Unexpected failures raise `DataAccessException`.
+**Conventions:**
 
-## TransactionManager
+- Every operation runs in the current `TransactionRunner` scope; calling one outside a scope is a defect.
+- Absent optional results return `Optional.empty`.
+- Errors: `RepositoryException` and `DuplicateKeyException` are unchecked. Services translate them to `ValidationException`, `ConflictException`, or `PersistenceFailureException`.
+- Authorization: none here. Repositories check data integrity only. Conditional operations are concurrency safeguards, not business rules.
+- Side effects: only those listed.
 
-| Operation | Behavior | Requirements |
-|-----------|----------|--------------|
-| `inTransaction(work)` | Runs the work and commits on normal return. Rolls back on any exception and rethrows it. Nested calls join the outer transaction | NFR-005, FR-024, FR-029 |
+## TransactionRunner
 
-A committed transaction must survive an unexpected exit; an uncommitted one must leave no trace.
+| Operation | Contract | Requirements |
+|---|---|---|
+| `inTransaction(work)` | Runs `work` atomically and returns its result. Commits on return and rolls back on any exception. A nested call joins the outer transaction. A committed transaction survives process exit; an uncommitted one leaves no trace | FR-040, NFR-005 |
+| `readOnly(work)` | One consistent read scope | FR-037 |
 
 ## UserRepository
 
-| Operation | Behavior | FR/NFR |
-|-----------|----------|--------|
-| `insert(user)` | Saves a user. A duplicate `usernameKey` raises `DuplicateKeyException`, which `AccountService` maps to a field error | FR-001 |
-| `findById(id)` | Optional User | FR-003 |
-| `findByUsernameKey(key)` | Optional User | FR-001, FR-002, FR-006 |
-| `updateLoginState(id, failedCount, lockedUntil)` | Saves lockout fields | NFR-002 |
-| `findSummaries(ids)` | Names for display | FR-028 |
+| Operation | Input | Output | Errors and notes | Requirements |
+|---|---|---|---|---|
+| `insert` | `User` | none | `DuplicateKeyException` on `usernameKey` | FR-001 |
+| `findByUsernameKey` | key | `Optional<User>` | | FR-001, FR-002, FR-006 |
+| `findById` | `UserId` | `Optional<User>` | | FR-003 |
+| `findSummaries` | `Set<UserId>` | `Map<UserId, UserSummary>` | Bulk display names | FR-028 |
+| `updateLoginState` | `UserId`, count, `lockedUntil` | none | The only mutable user fields in the MVP | NFR-002 |
 
 ## GroupRepository
 
-Groups and their memberships.
+| Operation | Input | Output | Notes | Requirements |
+|---|---|---|---|---|
+| `insert` | `Group` | none | | FR-005 |
+| `findById` | `GroupId` | `Optional<Group>` | | FR-008 |
+| `findByIds` | `Set<GroupId>` | `List<Group>` | | FR-008 |
+| `updateNameAndAdmin` | `Group` | none | | FR-008, BR-23 |
 
-| Operation | Behavior | FR |
-|-----------|----------|----|
-| `insert(group, adminMembership)` | Saves the group and first member | FR-005 |
-| `findById(id)` | Optional Group | FR-008 |
-| `updateName(id, name)` | Renames | FR-008 |
-| `findCurrentMembership(groupId, userId)` | Optional Membership | FR-003, FR-006 |
-| `hadMembership(groupId, userId)` | True if ever a member. Supports NC-3 | FR-003 |
-| `findCurrentMembers(groupId)` | Current members | FR-008, FR-017 |
-| `findGroupsForUser(userId)` | Groups with a current membership | FR-008 |
-| `addMembership(membership)` | Adds a row. Violating the one-current-membership rule raises `DuplicateKeyException` | FR-006 |
-| `endMembership(groupId, userId, leftAt)` | Sets `leftAt`; never deletes history | FR-006, FR-007 |
+## MembershipRepository
+
+| Operation | Input | Output | Errors and notes | Requirements |
+|---|---|---|---|---|
+| `insert` | `Membership` | none | `DuplicateKeyException` on a second active row | FR-005, FR-006 |
+| `findActive` | `GroupId`, `UserId` | `Optional<Membership>` | | FR-003 |
+| `listActiveMembers` | `GroupId` | `List<Membership>` by `joinedAt`, then user ID | Notification audience; succession order | FR-008, FR-017, BR-23 |
+| `activeGroupIds` | `UserId` | `Set<GroupId>` | | FR-003 |
+| `everGroupIds` | `UserId` | `Set<GroupId>` | Former-member scope | FR-034, DEC-07 |
+| `areActiveMembers` | `GroupId`, `Set<UserId>` | `Set<UserId>` (those active) | | FR-010, FR-030 |
+| `end` | `MembershipId`, `leftAt`, `endedBy` | none | The row is retained forever | FR-006 |
+| `listCoMembers` | `UserId` | `Set<UserId>` | People who are or were in a shared group; for report filters | FR-035 |
 
 ## ExpenseRepository
 
-Expenses and their ordered shares.
+| Operation | Input | Output | Notes | Requirements |
+|---|---|---|---|---|
+| `insert` | `Expense` with shares | none | Atomic with shares | FR-010, FR-012 |
+| `findById` | `ExpenseId` | `Optional<Expense>` | Shares in position order; no receipt bytes | FR-012 |
+| `updateIfVersionMatches` | `Expense`, `expectedVersion` | boolean | Conditional on `PENDING` and version; replaces shares | FR-016 |
+| `deleteIfPending` | `ExpenseId`, `expectedVersion` | boolean | Conditional. Shares and receipt cascade; notification links clear | FR-016 |
+| `updateStatusIfPending` | `ExpenseId`, `expectedVersion`, new status, `now` | boolean | **False means another decision or an edit won** | FR-021, FR-024 |
+| `listByGroup` | `GroupId`, `statuses?` | `List<ExpenseSummaryRow>` | No share or receipt content | FR-008 |
+| `listPendingAwaiting` | `UserId` | `List<ExpenseSummaryRow>` | Non-creator participant, Pending, active member | FR-021 |
+| `findPendingInvolving` | `GroupId`, `UserId` | `List<ExpenseSummaryRow>` | Creator, payer, or participant; for the exit guard | FR-007 |
+| `findForReport` | `UserId`, `ReportFilter`, `VisibilityScope` | `List<ReportExpenseRow>` | Filter pushed down to the query; all statuses | FR-034, FR-035 |
 
-| Operation | Behavior | FR |
-|-----------|----------|----|
-| `insert(expense)` | Saves the expense and its shares in order | FR-010, FR-012 |
-| `findById(id)` | Optional Expense with shares in saved order | FR-012, FR-024 |
-| `findByGroup(groupId, optionalStatus)` | Summaries | FR-003 |
-| `replaceIfPending(expense, expectedVersion)` | Conditional: replaces the fields and shares only if still Pending at that version. Returns false otherwise | FR-016 |
-| `deleteIfPending(id, expectedVersion)` | Conditional, with the same rule. The receipt is removed too, and notification links are cleared | FR-016 |
-| `decideIfPending(id, expectedVersion, status)` | Conditional status update. **Returns false if already decided or stale**, which gives the "first decision wins" rule | FR-021, FR-024 |
-| `findApprovedByGroup(groupId)` | **Approved only**, with shares; input to `BalanceLedger` | FR-020, FR-026, FR-027, SC-005 |
-| `findAwaitingDecisionBy(userId)` | Pending expenses where the user is a participant and not the creator | FR-021 |
-| `findForReport(userId, criteria)` | Expenses involving the user that match the filters, all statuses | FR-034, FR-035 |
+**There is deliberately no unconditional update or delete.** No operation can change an Approved or Rejected expense (FR-016, FR-024).
 
 ## ReceiptRepository
 
-| Operation | Behavior | FR |
-|-----------|----------|----|
-| `save(expenseId, receipt)` | Adds or replaces the single receipt | FR-014, FR-016 |
-| `find(expenseId)` | Optional receipt, with bytes | FR-014 |
+| Operation | Input | Output | Notes | Requirements |
+|---|---|---|---|---|
+| `put` | `ExpenseId`, `Receipt`, `uploadedAt` | none | Adds or replaces the one receipt | FR-014, FR-016 |
+| `find` | `ExpenseId` | `Optional<Receipt>` | Loads bytes | FR-014 |
+| `exists` | `ExpenseId` | boolean | No bytes | FR-014 |
+| `delete` | `ExpenseId` | none | Reachable only through a Pending edit | FR-016 |
 
-Separate from `ExpenseRepository`, so expense lists do not load images (NFR-004).
+## ApprovalDecisionRepository: append-only
 
-## ApprovalDecisionRepository
+| Operation | Input | Output | Errors and notes | Requirements |
+|---|---|---|---|---|
+| `insert` | `ApprovalDecision` | none | `DuplicateKeyException` on a second decision | FR-024 |
+| `findByExpense` | `ExpenseId` | `Optional<ApprovalDecision>` | | FR-024 |
 
-| Operation | Behavior | FR/NFR |
-|-----------|----------|--------|
-| `insert(decision)` | Saves it. A second decision for an expense raises `DuplicateKeyException` | FR-024, NFR-006 |
-| `findByExpense(expenseId)` | Optional decision | FR-024 |
+**No update or delete exists** (NFR-006).
 
-**There are deliberately no update or delete operations.**
+## PaymentRepository: append-only
 
-## PaymentRepository
+| Operation | Input | Output | Notes | Requirements |
+|---|---|---|---|---|
+| `insert` | `Payment` | none | | FR-030 |
+| `listForUser` | `UserId`, `GroupId?` | `List<Payment>` | As payer or recipient, newest first | FR-033 |
+| `findForReport` | `UserId`, `ReportFilter`, `VisibilityScope` | `List<Payment>` | | FR-034, FR-035 |
 
-| Operation | Behavior | FR/NFR |
-|-----------|----------|--------|
-| `insert(payment)` | Saves it | FR-030, FR-031 |
-| `findByGroup(groupId)` | Input to `BalanceLedger` | FR-027 |
-| `findForUser(userId, optionalGroupId)` | As payer or recipient, for history | FR-033 |
-| `findForReport(userId, criteria)` | Matching payments involving the user | FR-034, FR-035 |
-
-**There are deliberately no update or delete operations** (NFR-006).
+**No update or delete exists** (NFR-006).
 
 ## NotificationRepository
 
-| Operation | Behavior | FR |
-|-----------|----------|----|
-| `insertAll(notifications)` | Saves them in the caller's transaction | FR-017, FR-023 |
-| `findByRecipient(userId)` | Newest first | FR-019 |
-| `countUnread(userId)` | Count | FR-019 |
-| `markRead(id, recipientId, readAt)` | Marks read only if it belongs to the recipient. Returns false otherwise | FR-019 |
+| Operation | Input | Output | Notes | Requirements |
+|---|---|---|---|---|
+| `insertAll` | `List<Notification>` | none | In the caller's transaction | FR-017, FR-023 |
+| `findCreatedForRecipient` | `ExpenseId`, `UserId` | `Optional<Notification>` | For `expenseEdited` | BR-18 |
+| `resetToUnread` | `NotificationId` | none | Only for DEC-16 | BR-18 |
+| `countUnread` | `UserId`, `VisibilityScope` | int | | FR-019 |
+| `listForRecipient` | `UserId`, `VisibilityScope` | `List<NotificationRow>` newest first | Each row states whether the expense is Pending and the user is a non-creator participant | FR-017, FR-019 |
+| `markRead` | `UserId`, `Set<NotificationId>`, `now` | none | Restricted to the recipient's own rows | FR-019 |
 
-## Implementation expectations (proposed for SQLite)
+## LedgerQueryRepository: read-only
 
-- Foreign keys turned on for each connection, with `synchronous=FULL` (NFR-005).
-- One connection used by the single background thread (research R-03, R-12).
-- A short busy timeout, in case a second copy of the application is writing.
-- Money and percentages stored as integers; never SQLite `REAL` (Principle IV, R-11).
-- The schema is created on first run. How later schema changes are handled is left to implementation
-  and is not part of the MVP scope.
+Returns only `LedgerEntry` projections. **Implementations select Approved expenses and all payments, and exclude payer shares and zero shares.**
+
+| Operation | Input | Output | Requirements |
+|---|---|---|---|
+| `entriesForGroups` | `Set<GroupId>` | `List<LedgerEntry>` | FR-026, FR-027 |
+| `entriesForPair` | `GroupId`, `UserId`, `UserId` | `List<LedgerEntry>` | FR-032 |
+| `entriesInvolving` | `GroupId`, `UserId` | `List<LedgerEntry>` | FR-007 |
+| `entriesForUser` | `UserId`, `VisibilityScope` | `List<LedgerEntry>` | FR-037 |
+
+The ledger rule is written in `Expense.ledgerEntries` and `Payment.ledgerEntry`, and repeated as a query for efficiency. **That duplication is a real risk (RISK-10).** Test RP-06 asserts both give identical results on the same data.
+
+## Implementation expectations
+
+- Per connection: `foreign_keys=ON`, `synchronous=FULL`, `journal_mode=DELETE`, `locking_mode=EXCLUSIVE`.
+- One connection, used by the single background thread.
+- If the exclusive lock cannot be obtained at startup, `AppConfig` shows the second-instance message and exits (DEC-03).
+- Money and percentages are integers. SQLite `REAL` is never used (Principle IV).
+- Schema details and migrations are in [data-model.md §5](../data-model.md#5-persistence-model-sqlite-proposed).
 
 ## Test doubles
 
-Each interface gets an in-memory fake for service tests, and `TransactionManager`'s fake runs the work
-directly (research R-22). Fakes must honor the same conditional and duplicate behavior. SQLite
-implementations are tested separately against a temporary database file.
+Each interface gets a hand-written in-memory fake for service tests, and `TransactionRunner`'s fake runs the work directly. Fakes must honor the same conditional and duplicate behavior. SQLite implementations are tested separately against a temporary file.

@@ -1,0 +1,78 @@
+@startuml generate-report-activity
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: data-model.md (Report), BR-19 to BR-21, DEC-12 to DEC-15
+title Generate Report\nFR-034 to FR-037 (conditional draft: OC-1 open)
+
+|User|
+start
+:Open Reports;
+|UI|
+:Load choices with filterOptions;
+|User|
+:Set optional from, to, group,
+other user, and statuses;
+:Generate;
+
+|ReportService|
+:PREPARE: check session; parse dates;
+if (Dates valid, and from not after to?) then (no)
+  |UI|
+  :Show field error;
+  stop
+else (yes)
+endif
+|ReportService|
+:Open one read-only scope;
+:AUTHORIZE: compute visible scope;
+note right
+  Active groups: all records involving the user.
+  Former groups: only items the user was part of (DEC-07).
+end note
+if (Group filter within scope?) then (no)
+  |UI|
+  :Show generic "not found" message;
+  stop
+else (yes)
+endif
+|ReportService|
+:Fetch matching expense rows
+(creator, payer, or participant, by expense date,
+other user on the same expense, by status);
+:Fetch matching payment rows
+(user is a party, by payment date, by other party,
+not affected by the status filter);
+:Fetch ledger entries of the user within
+the group and other-user filters;
+
+|ReportCalculator|
+if (Any line matched?) then (no)
+  :Empty lines, zero totals (not an error);
+else (yes)
+  :totalExpenseAmount, userShareTotal:
+  matching **Approved** expenses only;
+  :totalPaidByUser, totalReceivedByUser:
+  matching settlement payments;
+  :Status memo: count and amount per status,
+  labeled "Not included in totals";
+endif
+:For each other user, split ledger entries by date:
+opening (before from), period (from to to), later (after to);
+:current = opening + period + later;
+note right
+  Ignores the status filter. Pending and Rejected
+  never enter a total or a net (SC-005).
+  current equals BalanceService for the
+  same group scope, to the cent (FR-037).
+end note
+
+|UI|
+:Render lines, totals, memo, reconciliation,
+and "As of" generation time;
+note right
+  Reports are not stored. A later approval or a
+  backdated item can change an earlier period
+  when the report is run again (DEC-14).
+end note
+stop
+
+@enduml

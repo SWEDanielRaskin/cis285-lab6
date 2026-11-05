@@ -1,0 +1,331 @@
+@startuml domain-class
+' Status: Draft. AI-generated; not human reviewed (Constitution Principle VII).
+' Syntax not yet checked: PlantUML is not available on the authoring machine.
+' Written design: specs/001-splitsmart-expense-sharing/data-model.md and contracts/
+title SplitSmart Domain and Service Design (Swing MVP, Draft)
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+package "domain" {
+  class Money <<value object>> {
+    - value : BigDecimal {scale 2}
+    + {static} parseStrict(text) : Money
+    + {static} ofCents(cents) : Money
+    + {static} normalize(value) : Money
+    + {static} floorToCent(value) : Money
+    + plus(other) : Money
+    + minus(other) : Money
+    + compareTo(other) : int
+  }
+  note right of Money
+    NFR-001, FR-010. BigDecimal only.
+    parseStrict refuses more than 2 decimals.
+    normalize uses HALF_EVEN (Principle IV).
+    floorToCent uses FLOOR, for allocation only (FR-011 to FR-013).
+  end note
+
+  class Percentage <<value object>> {
+    - value : BigDecimal {scale 2}
+    + {static} parseStrict(text) : Percentage
+  }
+
+  enum SplitMethod {
+    EQUAL
+    PERCENTAGE
+  }
+
+  enum ExpenseStatus {
+    PENDING
+    APPROVED
+    REJECTED
+  }
+
+  enum DecisionType {
+    APPROVE
+    REJECT
+  }
+
+  enum NotificationType {
+    EXPENSE_CREATED
+    EXPENSE_APPROVED
+    EXPENSE_REJECTED
+  }
+
+  enum GroupStatus {
+    ACTIVE
+    ARCHIVED
+  }
+  note bottom of GroupStatus
+    ARCHIVED is reserved for
+    Post-MVP FR-009.
+  end note
+
+  class User {
+    - id : UserId
+    - username : String
+    - usernameKey : String
+    - displayName : String
+    - passwordHash : String
+    - failedLoginCount : int
+    - lockedUntil : Instant
+    + isLocked(now) : boolean
+    + recordFailedLogin(now) : void
+    + recordSuccessfulLogin() : void
+  }
+  note right of User
+    FR-001, FR-002, FR-004, NFR-002.
+    5 failures lock for 5 minutes.
+  end note
+
+  class Group {
+    - id : GroupId
+    - name : String
+    - adminId : UserId
+    - status : GroupStatus
+    + rename(name) : void
+    + isAdmin(userId) : boolean
+  }
+
+  class Membership {
+    - groupId : GroupId
+    - userId : UserId
+    - joinedAt : Instant
+    - leftAt : Instant
+    + isCurrent() : boolean
+  }
+
+  class Expense {
+    - id : ExpenseId
+    - groupId : GroupId
+    - creatorId : UserId
+    - payerId : UserId
+    - amount : Money
+    - date : LocalDate
+    - description : String
+    - splitMethod : SplitMethod
+    - status : ExpenseStatus
+    - version : int
+    + {static} create(...) : Expense
+    + reviseWhilePending(...) : void
+    + isEligibleApprover(userId) : boolean
+    + decide(type, approverId, reason, now) : ApprovalDecision
+    + affectsBalances() : boolean
+  }
+  note right of Expense
+    FR-010, FR-016, FR-020 to FR-024.
+    Exactly one payer; need not participate.
+    Starts PENDING. Only APPROVED affects balances.
+    Creator cannot decide. One decision is final.
+  end note
+
+  class Share {
+    - position : int
+    - participantId : UserId
+    - percentage : Percentage
+    - amount : Money
+  }
+  note bottom of Share
+    FR-012: position saves participant order.
+    Shares total exactly the expense amount.
+  end note
+
+  class ReceiptImage {
+    - mediaType : String
+    - bytes : byte[]
+    - originalFileName : String
+  }
+
+  class ApprovalDecision <<immutable>> {
+    - id : DecisionId
+    - expenseId : ExpenseId
+    - approverId : UserId
+    - decision : DecisionType
+    - reason : String
+    - decidedAt : Instant
+  }
+
+  class Payment <<immutable>> {
+    - id : PaymentId
+    - groupId : GroupId
+    - payerId : UserId
+    - recipientId : UserId
+    - amount : Money
+    - date : LocalDate
+    - note : String
+    - recordedAt : Instant
+  }
+  note right of Payment
+    FR-030, FR-031, NFR-006.
+    Group required. Applies immediately.
+  end note
+
+  class Notification {
+    - id : NotificationId
+    - recipientId : UserId
+    - type : NotificationType
+    - expenseId : ExpenseId
+    - groupId : GroupId
+    - message : String
+    - createdAt : Instant
+    - readAt : Instant
+    + markRead(now) : void
+  }
+
+  class SplitAllocator <<policy>> {
+    + allocateEqual(amount, orderedParticipants) : List<Share>
+    + allocatePercentage(amount, orderedPercentages) : List<Share>
+  }
+  note bottom of SplitAllocator
+    FR-011 to FR-013. Floor each share, then give
+    leftover cents one each in participant order.
+  end note
+
+  class BalanceLedger <<derived>> {
+    + {static} from(approvedExpenses, payments) : BalanceLedger
+    + net(viewer, other) : Money
+    + memberNet(user) : Money
+  }
+  note bottom of BalanceLedger
+    FR-026 to FR-029. Not persisted.
+    Input is APPROVED expenses and payments only.
+  end note
+
+  class PairBalance <<derived>> {
+    - otherUser : UserId
+    - overallNet : Money
+    - perGroup : Map<GroupId, Money>
+  }
+
+  class ReportCriteria <<value object>> {
+    - startDate : LocalDate
+    - endDate : LocalDate
+    - groupId : GroupId
+    - otherUserId : UserId
+    - statuses : Set<ExpenseStatus>
+  }
+
+  class Report <<derived>> {
+    - expenseLines : List<ReportExpenseLine>
+    - paymentLines : List<ReportPaymentLine>
+    - totals : ReportTotals
+  }
+
+  class ReportExpenseLine <<derived>>
+  class ReportPaymentLine <<derived>>
+  class ReportTotals <<derived>> {
+    - totalExpenseAmount : Money
+    - userShareTotal : Money
+    - totalPaid : Money
+    - totalReceived : Money
+    - filteredNetByUser : Map<UserId, Money>
+    - currentNetByUser : Map<UserId, Money>
+  }
+  note bottom of ReportTotals
+    FR-036, FR-037, SC-005. Totals use APPROVED
+    only. Details under NC-8 and NC-10.
+  end note
+}
+
+package "service" {
+  class AccountService {
+    + register(...) : UserSummary
+    + login(...) : UserSummary
+    + findUserByUsername(actor, username) : UserSummary
+  }
+  class GroupService {
+    + createGroup(actor, name) : GroupSummary
+    + renameGroup(actor, groupId, name) : GroupSummary
+    + addMember(actor, groupId, userId) : MemberSummary
+    + removeMember(actor, groupId, userId) : void
+    + leaveGroup(actor, groupId) : void
+    + listMyGroups(actor) : List<GroupSummary>
+    + getGroupDetail(actor, groupId) : GroupDetail
+  }
+  class ExpenseService {
+    + createExpense(actor, input) : ExpenseDetail
+    + editPendingExpense(actor, id, version, input) : ExpenseDetail
+    + deletePendingExpense(actor, id, version) : void
+    + getExpense(actor, id) : ExpenseDetail
+    + listGroupExpenses(actor, groupId, status) : List<ExpenseSummary>
+    + getReceipt(actor, id) : ReceiptImage
+  }
+  class ApprovalService {
+    + approve(actor, id, version, reason) : ApprovalDecisionView
+    + reject(actor, id, version, reason) : ApprovalDecisionView
+    + listAwaitingMyDecision(actor) : List<ExpenseSummary>
+  }
+  class NotificationService {
+    + listMine(actor) : List<NotificationView>
+    + unreadCount(actor) : int
+    + markRead(actor, id) : void
+    + notifyExpenseCreated(expense) : void
+    + notifyExpenseDecided(expense, decision) : void
+  }
+  class BalanceService {
+    + getMyBalances(actor) : List<PairBalance>
+    + getGroupBalances(actor, groupId) : List<PairBalance>
+    + memberNetInGroup(groupId, userId) : Money
+    + owedInGroup(groupId, payerId, recipientId) : Money
+  }
+  class PaymentService {
+    + recordPayment(actor, input, overpaymentConfirmed) : PaymentView
+    + listMyPayments(actor, groupId) : List<PaymentView>
+  }
+  class ReportService {
+    + generateReport(actor, criteria) : Report
+  }
+  class AccessPolicy {
+    + requireMember(actor, groupId) : void
+    + requireAdmin(actor, groupId) : void
+    + canViewExpense(actor, expense) : boolean
+  }
+  interface PasswordHasher {
+    + hash(password) : String
+    + verify(password, stored) : boolean
+  }
+  class Pbkdf2PasswordHasher
+  PasswordHasher <|.. Pbkdf2PasswordHasher
+}
+
+Group "1" -- "1..*" Membership
+User "1" -- "*" Membership
+Group "1" -- "*" Expense
+Expense "1" *-- "1..*" Share : ordered
+Expense "1" *-- "0..1" ReceiptImage
+Expense "1" -- "0..1" ApprovalDecision
+Group "1" -- "*" Payment
+User "1" -- "*" Notification
+Expense "1" -- "*" Notification
+SplitAllocator ..> Share : creates
+SplitAllocator ..> Money
+BalanceLedger ..> Expense : APPROVED only
+BalanceLedger ..> Payment
+BalanceLedger ..> PairBalance : produces
+Report *-- ReportTotals
+Report *-- ReportExpenseLine
+Report *-- ReportPaymentLine
+
+AccountService ..> User
+AccountService ..> PasswordHasher
+GroupService ..> Group
+GroupService ..> BalanceService : FR-007
+GroupService ..> AccessPolicy
+ExpenseService ..> Expense
+ExpenseService ..> SplitAllocator
+ExpenseService ..> NotificationService : FR-017
+ExpenseService ..> AccessPolicy
+ApprovalService ..> Expense
+ApprovalService ..> NotificationService : FR-023
+ApprovalService ..> AccessPolicy
+BalanceService ..> BalanceLedger
+PaymentService ..> Payment
+PaymentService ..> BalanceService : FR-032
+PaymentService ..> AccessPolicy
+ReportService ..> Report
+ReportService ..> ReportCriteria
+ReportService ..> BalanceLedger : FR-037
+ReportService ..> AccessPolicy
+NotificationService ..> Notification
+
+@enduml

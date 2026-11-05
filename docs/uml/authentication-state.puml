@@ -1,0 +1,32 @@
+@startuml authentication-state
+!pragma layout smetana
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: data-model.md (User), BR-26, DEC-23
+title Account Authentication and Lockout\nNFR-002, FR-002 (conditional draft: OC-1 open)
+
+[*] --> Unlocked : register
+
+Unlocked : failedLoginCount 0 to 4
+Unlocked : lockedUntil is empty or expired
+Unlocked : --
+Unlocked : correct password / count = 0; lock cleared; session created
+Unlocked : wrong password [count below 4] / count + 1; generic message
+
+Locked : failedLoginCount = 5
+Locked : now is before lockedUntil
+Locked : --
+Locked : any attempt, even with the correct password /
+Locked :    refused before any password check; not counted;
+Locked :    lock not extended; "temporarily locked" message
+
+Unlocked --> Locked : wrong password [count = 4] / count = 5;\nlockedUntil = now + 5 minutes; generic message
+Locked --> Unlocked : now reaches lockedUntil (exactly +5:00) /\ncount restarts from 0 at the next attempt
+
+legend bottom left
+  State is persisted, so a restart cannot clear it. Time comes from an injected Clock, so tests can check +4:59 and +5:00.
+  Lock state is derived from failedLoginCount and lockedUntil; no separate status is stored.
+  "Consecutive" counts per account, across sessions and restarts. Only a success or a lock expiry clears the count.
+  Unknown usernames have no state; they get the same generic message as a wrong password.
+endlegend
+
+@enduml

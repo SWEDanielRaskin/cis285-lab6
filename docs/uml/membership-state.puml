@@ -1,0 +1,40 @@
+@startuml membership-state
+!pragma layout smetana
+' Status: Draft - Reconciliation Incomplete. AI-reconciled; not human reviewed (Principle VII).
+' Written source: data-model.md (Membership), BR-22 to BR-24, DEC-08 to DEC-11
+title Membership Lifecycle (one row)\nFR-005 to FR-007 (conditional draft: OC-1 open)
+
+[*] --> Active : createGroup / creator, also becomes admin\nor addMember / admin, by exact username
+
+Active : leftAt is empty
+Active : full group visibility
+Active : may be payer, participant, approver
+
+Ended : leftAt is set; row kept forever
+Ended : endedBy = userId means left
+Ended : endedBy = admin means removed
+Ended : read-only personal history (DEC-07)
+Ended : pair balances stay 0.00 (INV-EXIT-1)
+
+state exitChoice <<choice>>
+
+Active --> exitChoice : leaveGroup / member\nor removeMember / admin, on another member
+exitChoice --> Active : [a non-zero pair balance in the group,\nor involved in a Pending expense]\nrefused; BusinessRuleException names why
+exitChoice --> Ended : [every pair balance is 0.00, and\nnot creator, payer, or participant of a Pending expense]
+
+note right of Ended
+  **Rejoin (BR-24):** addMember by an admin creates a **new** row
+  starting in Active. This row stays Ended, as history.
+  A group with no active members has no admin who can act,
+  so no one can rejoin it.
+end note
+
+note left of Active
+  **Admin departure (BR-23):** when the admin row ends and members remain,
+  the earliest-joined remaining active member becomes admin
+  (ties by user ID), in the same transaction.
+  The last member may leave; the group stays stored with no active members.
+  removeMember on oneself is refused: use leaveGroup.
+end note
+
+@enduml
