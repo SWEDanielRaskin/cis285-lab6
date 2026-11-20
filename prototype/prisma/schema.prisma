@@ -7,8 +7,70 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Kept from Lab 8: used to verify the dev environment can reach the database.
 model EnvironmentCheck {
   id        Int      @id @default(autoincrement())
   message   String
   createdAt DateTime @default(now())
+}
+
+// FR1: a group of people who share expenses.
+model Group {
+  id        String    @id @default(cuid())
+  name      String
+  createdAt DateTime  @default(now())
+  members   Member[]
+  expenses  Expense[]
+}
+
+// FR2: a person inside one group. There are no user accounts in this prototype,
+// so a member exists only in the group it was added to.
+model Member {
+  id        String   @id @default(cuid())
+  groupId   String
+  name      String
+  // Lowercased, trimmed name. Enforces "no two members with the same name" per group.
+  nameKey   String
+  createdAt DateTime @default(now())
+
+  group         Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  paidExpenses  Expense[]      @relation("ExpensePayer")
+  shares        ExpenseShare[]
+
+  @@unique([groupId, nameKey])
+  @@index([groupId])
+}
+
+// FR3: one expense paid by one member and split equally among participants.
+// Money is stored as integer cents; floats never hold money.
+model Expense {
+  id          String   @id @default(cuid())
+  groupId     String
+  description String
+  amountCents Int
+  payerId     String
+  createdAt   DateTime @default(now())
+
+  group  Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  payer  Member         @relation("ExpensePayer", fields: [payerId], references: [id])
+  shares ExpenseShare[]
+
+  @@index([groupId, createdAt])
+}
+
+// One participant's share of an expense. The amounts are a saved snapshot of the
+// deterministic equal split, and `position` records the order that decided who
+// received the leftover cents.
+model ExpenseShare {
+  id          String @id @default(cuid())
+  expenseId   String
+  memberId    String
+  position    Int
+  amountCents Int
+
+  expense Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  member  Member  @relation(fields: [memberId], references: [id])
+
+  @@unique([expenseId, memberId])
+  @@unique([expenseId, position])
 }

@@ -1,0 +1,99 @@
+@startuml component-diagram
+title SplitSmart Prototype - Component Diagram (Lab 9)
+caption Dependencies point downward only. The domain layer imports nothing from the other layers.
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam packageStyle rectangle
+
+actor "User" as user
+
+node "Web browser" {
+  package "UI layer (React client components)\nsrc/components/" as ui {
+    [SplitSmartApp] as app
+    [GroupSidebar] as sidebar
+    [MembersPanel] as membersPanel
+    [ExpenseForm] as expenseForm
+    [ExpenseHistory] as history
+    [BalancesPanel] as balancesPanel
+    [apiClient\n(src/lib/apiClient.ts)] as apiClient
+  }
+}
+
+node "Next.js server (prototype/)" {
+  package "API layer (route handlers)\nsrc/app/api/groups/" as apiLayer {
+    [GET/POST /api/groups] as rGroups
+    [GET /api/groups/:id] as rGroup
+    [GET/POST /api/groups/:id/members] as rMembers
+    [GET/POST /api/groups/:id/expenses] as rExpenses
+    [GET /api/groups/:id/balances] as rBalances
+    [http.ts\nhandle() / readJson()] as http
+  }
+
+  package "Service layer\nsrc/lib/services/" as services {
+    [groupService] as gs
+    [memberService] as ms
+    [expenseService] as es
+    [validation + errors] as val
+  }
+
+  package "Domain layer (pure functions, unit tested)\nsrc/lib/domain/" as domain {
+    [money.ts\nparseAmountToCents / formatCents] as money
+    [split.ts\nallocateEqualSplit] as split
+    [balances.ts\ncalculateBalances / suggestSettlements] as balances
+  }
+
+  package "Persistence" as persistence {
+    [Prisma Client\n(src/lib/db.ts)] as prisma
+  }
+}
+
+database "SQLite\nprisma/dev.db" as db
+
+user --> app : uses
+app --> sidebar
+app --> membersPanel
+app --> expenseForm
+app --> history
+app --> balancesPanel
+app --> apiClient
+expenseForm ..> money : live validation\n+ split preview
+expenseForm ..> split
+
+apiClient --> rGroups : HTTP / JSON
+apiClient --> rGroup
+apiClient --> rMembers
+apiClient --> rExpenses
+
+rGroups --> gs
+rGroup --> gs
+rBalances --> gs
+rMembers --> ms
+rExpenses --> es
+
+gs --> balances
+es --> money
+es --> split
+gs ..> val
+ms ..> val
+es ..> val
+
+gs --> prisma
+ms --> prisma
+es --> prisma
+prisma --> db : SQL\n(DATABASE_URL="file:./dev.db")
+
+note right of domain
+  Money is always integer cents.
+  No layer above may do arithmetic on
+  dollars as floating point numbers.
+end note
+
+note bottom of http
+  Every route handler wraps its work in handle():
+  ValidationError -> 400 { error, field }
+  NotFoundError  -> 404 { error }
+  anything else  -> 500, generic message
+end note
+@enduml

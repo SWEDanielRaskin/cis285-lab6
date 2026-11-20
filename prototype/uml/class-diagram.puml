@@ -1,0 +1,140 @@
+@startuml class-diagram
+title SplitSmart Prototype - Class Diagram (Lab 9)
+caption Persisted entities (Prisma schema), the service layer, and the pure domain functions.
+
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam classAttributeIconSize 0
+hide empty members
+
+package "Persisted entities (prisma/schema.prisma)" {
+  class Group <<entity>> {
+    id : String {cuid}
+    name : String {1..50 chars}
+    createdAt : DateTime
+  }
+
+  class Member <<entity>> {
+    id : String {cuid}
+    groupId : String
+    name : String {1..50 chars}
+    nameKey : String {lowercase name}
+    createdAt : DateTime
+    --
+    unique (groupId, nameKey)
+  }
+
+  class Expense <<entity>> {
+    id : String {cuid}
+    groupId : String
+    description : String {1..200 chars}
+    amountCents : Int {1..100,000,000}
+    payerId : String
+    createdAt : DateTime
+  }
+
+  class ExpenseShare <<entity>> {
+    id : String {cuid}
+    expenseId : String
+    memberId : String
+    position : Int {0-based listed order}
+    amountCents : Int
+    --
+    unique (expenseId, memberId)
+    unique (expenseId, position)
+  }
+}
+
+Group "1" *-- "0..*" Member : has >
+Group "1" *-- "0..*" Expense : records >
+Expense "1" *-- "1..*" ExpenseShare : split into >
+Member "1" -- "0..*" Expense : paid by <
+Member "1" -- "0..*" ExpenseShare : owes <
+
+note right of ExpenseShare
+  Invariant: the shares of an expense
+  add up to exactly amountCents.
+  The payer and every participant
+  belong to the expense's group.
+end note
+
+package "Service layer (src/lib/services)" {
+  class groupService <<module>> {
+    + listGroups() : GroupSummary[]
+    + createGroup(body) : GroupSummary
+    + getGroupDetail(groupId) : GroupDetail
+  }
+  class memberService <<module>> {
+    + addMember(groupId, body) : MemberView
+  }
+  class expenseService <<module>> {
+    + recordExpense(groupId, body) : ExpenseView
+    - parseExpenseInput(body) : ExpenseInput
+  }
+  class ValidationError <<error>> {
+    field? : String
+  }
+  class NotFoundError <<error>>
+}
+
+package "Domain layer (src/lib/domain) - pure functions" {
+  class money <<module>> {
+    + parseAmountToCents(input) : ParseResult
+    + formatCents(cents) : String
+    + formatSignedCents(cents) : String
+  }
+  class split <<module>> {
+    + allocateEqualSplit(amountCents, participantIds) : ShareAllocation[]
+  }
+  class balances <<module>> {
+    + calculateBalances(members, expenses) : MemberBalance[]
+    + suggestSettlements(balances) : Transfer[]
+  }
+  class ShareAllocation <<value>> {
+    memberId : String
+    position : Int
+    amountCents : Int
+  }
+  class MemberBalance <<value>> {
+    memberId : String
+    name : String
+    paidCents : Int
+    shareCents : Int
+    balanceCents : Int
+  }
+  class Transfer <<value>> {
+    fromMemberId : String
+    toMemberId : String
+    amountCents : Int
+  }
+}
+
+split ..> ShareAllocation : creates
+balances ..> MemberBalance : creates
+balances ..> Transfer : creates
+
+expenseService ..> money : parses amount
+expenseService ..> split : allocates shares
+expenseService ..> Expense : creates
+expenseService ..> ExpenseShare : creates
+groupService ..> balances : computes
+groupService ..> Group : reads/creates
+memberService ..> Member : creates
+expenseService ..> ValidationError : throws
+expenseService ..> NotFoundError : throws
+memberService ..> ValidationError : throws
+
+note bottom of split
+  floor(amount / n) cents each,
+  then 1 leftover cent to each of the
+  first (amount mod n) participants in
+  listed order. $10 / 3 = 334, 333, 333.
+end note
+
+note bottom of balances
+  balance = paid - share.
+  Positive: should receive. Negative: owes.
+  Never stored; recomputed on every read.
+  The sum over a group is always 0.
+end note
+@enduml

@@ -1,0 +1,68 @@
+@startuml database-er
+title SplitSmart Prototype - SQLite Tables (prisma/migrations)
+
+skinparam shadowing false
+skinparam defaultFontName Arial
+hide circle
+hide methods
+
+entity Group {
+  * id : TEXT <<PK>>
+  --
+  * name : TEXT
+  * createdAt : DATETIME
+}
+
+entity Member {
+  * id : TEXT <<PK>>
+  --
+  * groupId : TEXT <<FK Group, ON DELETE CASCADE>>
+  * name : TEXT
+  * nameKey : TEXT
+  * createdAt : DATETIME
+  ..
+  UNIQUE (groupId, nameKey)
+}
+
+entity Expense {
+  * id : TEXT <<PK>>
+  --
+  * groupId : TEXT <<FK Group, ON DELETE CASCADE>>
+  * description : TEXT
+  * amountCents : INTEGER
+  * payerId : TEXT <<FK Member>>
+  * createdAt : DATETIME
+  ..
+  INDEX (groupId, createdAt)
+}
+
+entity ExpenseShare {
+  * id : TEXT <<PK>>
+  --
+  * expenseId : TEXT <<FK Expense, ON DELETE CASCADE>>
+  * memberId : TEXT <<FK Member>>
+  * position : INTEGER
+  * amountCents : INTEGER
+  ..
+  UNIQUE (expenseId, memberId)
+  UNIQUE (expenseId, position)
+}
+
+entity EnvironmentCheck {
+  * id : INTEGER <<PK>>
+  --
+  * message : TEXT
+  * createdAt : DATETIME
+}
+
+Group ||--o{ Member
+Group ||--o{ Expense
+Expense ||--|{ ExpenseShare
+Member ||--o{ Expense : pays
+Member ||--o{ ExpenseShare : participates
+
+note bottom of EnvironmentCheck
+  Kept from Lab 8.
+  Not used by SplitSmart.
+end note
+@enduml

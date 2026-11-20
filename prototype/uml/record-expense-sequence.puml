@@ -1,0 +1,83 @@
+@startuml record-expense-sequence
+title SplitSmart Prototype - Record an Expense (FR3, FR5)
+caption Example: Alice pays $10.00 for Alice, Bob and Charlie.
+
+skinparam shadowing false
+skinparam defaultFontName Arial
+autonumber
+
+actor User
+participant "ExpenseForm\n(browser)" as Form
+participant "SplitSmartApp\n(browser)" as App
+participant "apiClient" as Client
+participant "POST /api/groups/:id/expenses\n(route handler)" as Route
+participant "expenseService" as Service
+participant "money.ts" as Money
+participant "split.ts" as Split
+participant "Prisma Client" as Prisma
+database "SQLite\ndev.db" as DB
+
+User -> Form : enter "Coffee", "10", payer Alice,\ntick Alice, Bob, Charlie
+Form -> Money : parseAmountToCents("10")
+Money --> Form : ok, 1000 cents
+Form -> Split : allocateEqualSplit(1000, [A, B, C])
+Split --> Form : preview 334 / 333 / 333
+User -> Form : click "Record expense"
+
+alt client-side check fails (blank description, bad amount, no payer, no participants)
+  Form --> User : show error message (role="alert")\nnothing is sent
+else input looks valid
+  Form -> App : onRecord(input)
+  App -> Client : recordExpense(groupId, input)
+  Client -> Route : POST JSON {description, amount:"10",\npayerId, participantIds:[A,B,C]}
+  Route -> Service : recordExpense(groupId, body)
+
+  group VALIDATE (shape of the request)
+    Service -> Money : parseAmountToCents("10")
+    Money --> Service : 1000
+    Service -> Service : check description, payerId,\nparticipantIds non-empty and distinct
+  end
+  Service -> Split : allocateEqualSplit(1000, [A, B, C])
+  Split --> Service : [A:334 pos 0, B:333 pos 1, C:333 pos 2]
+
+  group TRANSACTION (prisma.$transaction)
+    Service -> Prisma : group.findUnique(groupId, include members)
+    Prisma -> DB : SELECT
+    DB --> Prisma : group + members
+    alt group not found
+      Service --> Route : throw NotFoundError
+      Route --> Client : 404 {error}
+    else payer or a participant is not a member of this group
+      Service --> Route : throw ValidationError(field)
+      Route --> Client : 400 {error, field}
+      note right : the transaction rolls back;\nnothing is saved
+    else all checks pass
+      Service -> Prisma : expense.create(..., shares.create[3])
+      Prisma -> DB : INSERT Expense, INSERT 3 ExpenseShare
+      DB --> Prisma : rows
+      Prisma --> Service : expense with shares
+      Service --> Route : ExpenseView
+      Route --> Client : 201 ExpenseView
+    end
+  end
+
+  alt response was 400 or 404
+    Client --> App : throw ApiRequestError(message)
+    App --> Form : rejected promise
+    Form --> User : show the server's message
+  else 201 Created
+    Client --> App : ExpenseView
+    App -> Client : getGroup(groupId), listGroups()
+    Client -> Route : GET /api/groups/:id
+    note right of Route
+      groupService.getGroupDetail reads members,
+      expenses and shares, then calls
+      calculateBalances(): paid - share per member.
+      Alice +6.66, Bob -3.33, Charlie -3.33 (sum 0)
+    end note
+    Route --> Client : GroupDetail
+    Client --> App : GroupDetail
+    App --> User : history and balances re-rendered
+  end
+end
+@enduml
